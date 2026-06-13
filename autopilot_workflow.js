@@ -186,7 +186,7 @@ const shipPrompt = (chosen) => R([
   '5. If health is BAD: ROLL BACK -> `cd ~/polymarket-bot && git reset --hard HEAD~1`, then `pkill -f "bot.py paper"; sleep 2; nohup caffeinate -i python3 bot.py paper >> bot.log 2>&1 &`, sleep 12, re-verify health is good on the reverted code. Set shipped=false, rolled_back=true, reason.',
   '6. ALWAYS, whether shipped or rolled back, once the bot is confirmed healthy: `cd ~/polymarket-bot && rm -f .autopilot_pause` to re-arm the watchdog. (If you somehow cannot get a healthy bot, leave the flag — it auto-expires in 5 min and the watchdog will then force a clean restart from HEAD.)',
   '7. If shipped (good): write ~/polymarket-bot/autopilot_state.json = {"last_ship_commit":"<hash>","last_ship_ts":"<output of: date -u +%FT%TZ>","settles_at_last_ship":<current settled-array length>,"pending_unproven":true,"cycle":<prev cycle + 1>}.',
-  '8. Append a dated entry to ~/polymarket-bot/QUANT_LOG.md (what shipped, the evidence, the test tally, and the rollback commit HEAD~1), then commit ONLY that file so the tree stays clean: `cd ~/polymarket-bot && git add QUANT_LOG.md && git commit -q -m "AUTOPILOT log: cycle record"`.',
+  '8. Append a dated entry to ~/polymarket-bot/QUANT_LOG.md (what shipped, the evidence, the test tally, and the rollback commit HEAD~1), then commit ONLY that file so the tree stays clean: `cd ~/polymarket-bot && git add QUANT_LOG.md && git commit -q -m "AUTOPILOT log: cycle record"`. Then best-effort mirror BOTH the code commit and this log to GitHub (ignore any push error): `git push origin master 2>&1 | tail -1 || true`.',
   'Return shipped=true (or shipped=false+rolled_back=true), commit, health_after, equity_before, equity_after. The change shipped is: ' + JSON.stringify(chosen),
 ].join('\n'))
 
@@ -195,7 +195,7 @@ const discardPrompt = (note) => R([
   '1. Check `cd ~/polymarket-bot && git log -1 --format=%s`. If the subject starts with "AUTOPILOT:" it is THIS cycle\'s un-shipped commit — discard it: `git reset --hard HEAD~1`. Otherwise leave HEAD alone (nothing was committed).',
   '2. Clear any leftover edit fence and confirm a clean tree: `cd ~/polymarket-bot && rm -f .autopilot_pause && git checkout -- . 2>/dev/null`; verify `git status --short` is empty.',
   '3. The daemon was NOT restarted this cycle, so it still runs the prior known-good code. Ensure the watchdog is alive (`pgrep -f watchdog.sh >/dev/null || (cd ~/polymarket-bot && nohup bash watchdog.sh >> watchdog.log 2>&1 &)`) and verify health on :8765 is ok:true / balanced.',
-  '4. Append ONE dated line to ~/polymarket-bot/QUANT_LOG.md: "AUTOPILOT: shipped nothing — ' + note.replace(/"/g, "'") + '", then commit ONLY that file so the tree stays clean for the next cycle: `cd ~/polymarket-bot && git add QUANT_LOG.md && git commit -q -m "AUTOPILOT log: shipped nothing"`.',
+  '4. Append ONE dated line to ~/polymarket-bot/QUANT_LOG.md: "AUTOPILOT: shipped nothing — ' + note.replace(/"/g, "'") + '", then commit ONLY that file so the tree stays clean for the next cycle: `cd ~/polymarket-bot && git add QUANT_LOG.md && git commit -q -m "AUTOPILOT log: shipped nothing"`. Then best-effort mirror to GitHub (ignore any push error): `git push origin master 2>&1 | tail -1 || true`.',
   'Return {clean, reason, head_subject}.',
 ].join('\n'))
 
