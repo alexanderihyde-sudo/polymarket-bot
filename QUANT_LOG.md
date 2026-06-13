@@ -1214,3 +1214,46 @@ TEST TALLY: crossmarket.py self-test 22/22 PASS (incl. matcher accepts true Fed 
 VERIFIED LIVE: restarted bot.py paper, slept 12s, /api/health at 127.0.0.1:8765 ok=true + audit=balanced + new crossmarket field present (n=0, matched=2, verdict="no data" — correct day-one shadow state). Exactly one bot (pgrep "bot.py paper" -> 2 = Python + caffeinate). Stable on recheck, no tracebacks in bot.log. Watchdog supervising; .autopilot_pause cleared after health confirmed.
 
 ROLLBACK PLAN: if health had been bad -> git reset --hard HEAD~1 (95ed5df), restart same way. Not needed; ship healthy.
+
+## 2026-06-13 ~06:43 UTC — feature: per-category brain specialists (OOS-gated partial pooling)
+
+**Shipped** (commit 8c3c994). Extends the existing per-strategy specialist
+machinery in `brain_train`/`brain_adjust` to a canonical bet-category key
+(sports / crypto / weather / politics / macro / social, via `cat_key`). This
+is a hierarchical / partial-pooling layer, NOT N independent models: the
+global model still trains on every non-arbitrage, dead-cohort-filtered row and
+remains the prior and fallback.
+
+**Mechanism**
+- For each category with >=20 dead-cohort-filtered rows, `brain_train` fits a
+  specialist logistic AND scores its out-of-sample skill with the *same*
+  expanding-window walk-forward CV the global model uses. Stored as
+  `{w, oos_skill, n_eff, n}` in `BRAIN["cat_specialists"]`.
+- `brain_adjust(strategy, price, ctx, side=None, category=None)` blends the
+  global probability toward the category specialist ONLY when `oos_skill>0`
+  AND `n_eff>0`, weighted by `cw = n_eff/(n_eff+60)`. A category shrinks fully
+  to the global model until it earns divergence out-of-sample; otherwise the
+  call is a byte-identical no-op.
+- Category is threaded point-in-time from the position/opportunity at all three
+  sizing sites (kelly/high_prob, news, daytrade) — never recomputed at decision
+  time, no extra network call.
+- Cache fix: a stale BRAIN lacking `cat_specialists` now forces a retrain.
+
+**Gates (all passed)**
+- bot.py test 164/164, tests.py 80/0, chartml.py ALL PASS, ml.py ALL PASS.
+- Tightened no-regression proof on a FIXED MIXED-category dataset: global
+  `cv_skill` (0.6729) and `brain_adjust(category=None)` (1.06931446...) are
+  byte-identical to the pre-change behavior on the SAME mixed data.
+- Era hygiene: dead-cohort sports rows never form a specialist; an
+  OOS-negative category, a dead-cohort-only (n_eff=0) category, and an unknown
+  category are all pure no-ops; a category with real OOS skill + credibility
+  diverges.
+- Global cv_skill on the live account: None before -> None after (only 4
+  settled rows; below the 10-row OOS threshold either way — no regression). No
+  category has 20+ live rows yet, so the layer is currently a no-op live and
+  will engage automatically once a category accumulates enough labels.
+
+**Dashboard**: per-category specialists (category, n, OOS skill, applied cw)
+now surface on the Models tab under model 13.
+
+Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
