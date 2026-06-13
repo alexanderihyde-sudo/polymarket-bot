@@ -1475,3 +1475,60 @@ point-in-time FRED read skipping missing "." values, end-to-end specialist learn
 **Gates.** bot.py 214/214, tests.py 80/80, chartml.py ALL PASS, ml.py ALL PASS.
 crossmarket.py untouched. Committed (FEATURE: macro API features). Restarted
 pause-fenced; /api/health ok + balanced, exactly one bot.
+
+## 2026-06-13 — FEATURE: per-category SOCIAL API features (news_rss + HackerNews) shipped (commit 6038018)
+
+**What.** Gave the `social` specialist its own point-in-time feature set sourced from
+the keyless news_rss (Google News + BBC) and HackerNews connectors, added as a
+hierarchical/partial-pooling layer that shrinks fully to the global model until the
+category earns divergence out-of-sample. Three features, all defaulting EXACTLY
+neutral (0.0) when absent:
+- `s_newsstrong` (social_news_strong): corroborated fresh-coverage flag — 1.0 when
+  >=2 distinct fresh headlines match the subject or one matches strongly (>=3
+  overlapping tokens). Stronger than the GLOBAL single-hit `newsbk`.
+- `s_sentmag` (social_sent_mag): magnitude of fresh-headline lexicon sentiment, [0,1]
+  — how loud the news is, direction-agnostic.
+- `s_sentalign` (social_sent_align): sentiment aligned to the side being bet, [-1,1]
+  — positive mood on a Yes (or negative mood on a No) reads positive; the No side
+  flips the sign.
+
+**Connector.** Both APIs ALREADY exist in `news_loop()` and fill the shared
+`HEADLINES` buffer: news_rss (Google News + BBC RSS, real pubDate via `_rss_items`)
+and HackerNews (hn.algolia.com search_by_date, `created_at_i`). Keyless, governed
+(`_governor`), timeout-bounded (10s), cached, fail-silent — a dead feed yields fewer
+fresh hits, never an exception or a stall. The new `social_features(question, side)`
+does ZERO network I/O itself (it only reads the buffer the loop owns), so it can
+neither stall nor crash the daemon. `_fresh_headline_hits` helper added.
+
+**Wiring.** `is_social` detection (cat_key=="social" or cluster_of=="social-posts")
+gates a social-only entry-context read; the three `social_*` ctx fields are attached
+to opportunities, side-aligned to the outcome we'd back. `_brain_x` maps them to
+`s_newsstrong/s_sentmag/s_sentalign`, defaulting 0.0 when absent. `SOCIAL_X_KEYS`
+added to `_CAT_X_KEYS` so `_global_x` STRIPS them from the global logistic/zoo/MLP
+view — they survive ONLY in the OOS-gated social specialist. The GLOBAL `newsbk`/
+`nsent` keys are DISTINCT and unchanged. brain_adjust's per-category partial pooling
+already engages the social specialist when (and only when) it earns oos_skill>0 with
+n_eff>0. Added a `by_social` attribution bucket (scoped to social_sent_align).
+
+**Leakage / era hygiene.** Point-in-time verified: every headline carries its REAL
+publication timestamp (RSS pubDate / HN created_at_i, never fetch time) and is
+filtered to a strict 5400s freshness window BEFORE the decision moment — a regression
+test plants the same two headlines OUTSIDE the window and proves they are invisible
+(the exact future-leakage guard). No future market data is consulted. dead_cohort()
+remains threaded through every per-category learner (training rows AND credibility).
+The specialist is a pure no-op until 20+ living-cohort labels beat the base rate OOS.
+
+**Global no-regression (proven).** Golden global cv_skill on the FIXED MIXED-category
+fixture: 0.6729 BEFORE == 0.6729 AFTER; golden global weights unchanged
+(bias 1.5314, imb 1.5094); golden brain_adjust(category=None) on MIXED data
+1.0693144597232576 unchanged; zero social keys in the global w or any per-strategy
+specialist. Live global cv_skill None BEFORE == None AFTER (only 20 living non-arb
+rows, n_eff=5 — below the CV threshold, unchanged). 12 new social tests (neutrality,
+explicit-None==absent sentinel, binary/scaled/capped values, side-alignment flip,
+stale-headline no-future-leak, fail-silent off-subject neutral, end-to-end specialist
+learning + global feature-space isolation).
+
+**Gates.** bot.py 226/226, tests.py 80/80, chartml.py ALL PASS, ml.py ALL PASS.
+crossmarket.py untouched (ran for sanity, ALL PASS). Committed (FEATURE: social API
+features (news_rss+hackernews)). Restarted pause-fenced; /api/health ok + balanced,
+exactly one bot.
