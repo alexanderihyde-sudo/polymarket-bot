@@ -5796,6 +5796,8 @@ def daytrade_loop(cfg, account):
                 # specialist and the opportunity record (no recompute, no
                 # second network call at decision time).
                 dt_category = market_category(m)
+                if dt_category in (dt.get("blocked_categories") or []):
+                    continue  # learning says daytrades in this category lose
                 adj = brain_adjust("daytrade", price,
                                    {"spread": sb["spread"],
                                     "imbalance": sb["imbalance"],
