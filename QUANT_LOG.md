@@ -1309,3 +1309,61 @@ pollute the new specialist.
   base rate out-of-sample, at which point it engages automatically.
 
 Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
+
+---
+
+## 2026-06-13 — FEATURE: per-category CRYPTO API features (CoinGecko + Coinbase + Kraken)
+
+Commit `6aadc8c`. Second per-category specialist feed (after sports), same
+OOS-gated partial-pooling contract: the global model is always the prior and is
+provably untouched on the common path.
+
+**Connectors** (all free/keyless public endpoints, governed via `get_json`
+[20s timeout, fail-silent -> None], wrapped in `_cached`):
+- `_kraken_spread_bps(sym)`: live bid/ask from Kraken `/0/public/Ticker` (b, a
+  top-of-book) -> `(ask-bid)/mid*1e4` bps, 60s cache. Crossed/empty book -> None.
+- `_coingecko_spot(sym)` + `_crypto_spot(sym)`: Coinbase spot first (existing
+  `_spot`, 60s), CoinGecko `/simple/price` as fail-silent fallback.
+- `_crypto_vol(sym)` (existing, hardened): now DROPS the in-progress hourly
+  candle (`rows[:-1]`) so realized vol is computed from CLOSED candles only —
+  the live candle's close/high/low keep moving and would leak forward data.
+
+**Features** (`crypto_features(m, price)`, crypto markets only; all default None):
+- `spot_distance_pct`: signed (spot - strike)/strike from live spot, when the
+  question carries a threshold (`parse_threshold`). Point-in-time.
+- `realized_vol_hourly`: Kraken last 24 closed hourly candles, close-to-close.
+- `bid_ask_spread_bps`: live Kraken ticker spread at request time.
+
+**Brain wiring** — `_brain_x` gains `c_spotdist, c_rvol, c_spread`, ALL
+defaulting EXACTLY 0.0 on the common path. They are STRIPPED via `_global_x()`
+(now `_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS`) from the global logistic,
+the zoo/MLP, the per-strategy specialists and online learning, surviving ONLY
+in the per-CATEGORY crypto specialist — the one learner allowed to weight them.
+Attached to crypto-market entry context only (detected via cat_key/cluster/coin
+keyword); every non-crypto market leaves them absent. `by_crypto` attribution
+bucket added (spot>strike / spot<strike / at-strike).
+
+**Leakage / era hygiene**: every read point-in-time (spot now, vol from CLOSED
+candles only, spread top-of-book now — never a future settlement). Spot/vol/
+spread all derive from market prices, no proprietary/latent signal, safe for
+the MIXED-category regression test. `dead_cohort()` already threaded through the
+per-category learner (training rows AND credibility).
+
+**Gates (all passed)**
+- bot.py test 187/187 (+11 new crypto tests), tests.py 80/0, chartml.py ALL
+  PASS, ml.py ALL PASS. (crossmarket.py untouched — not run.)
+- No-regression proof on the FIXED MIXED-category dataset: global `cv_skill`
+  (0.6729), global weights (bias 1.5314, imb 1.5094), and
+  `brain_adjust(category=None)` (1.0693144597232576) BYTE-IDENTICAL before/after.
+  Feature-space isolation proven: the global model and per-strategy specialists
+  carry NO crypto keys; the crypto specialist DOES learn `c_spotdist` end-to-end
+  on a spot-distance-driven fixture.
+- Crypto features default neutral with no ctx; explicit-None == absent;
+  fail-silent neutral on a non-crypto market (no symbol, no network); spread
+  math verified point-in-time; signed/scaled/capped to [-1,1] / [0,1].
+- Global cv_skill on the live account: None before -> None after (9 settled
+  rows, below the 10-row OOS threshold either way — no regression). The crypto
+  layer is a no-op live until the category accumulates 20+ labels and beats the
+  base rate out-of-sample, at which point it engages automatically.
+
+Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
