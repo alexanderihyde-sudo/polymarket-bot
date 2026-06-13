@@ -1638,3 +1638,5 @@ P5 (chartml lookback) is refuted by data: it claims all 5 daytrade settles have 
 P6 (wallet TTL 6h->1h) is the weakest (conf 0.72): speculative revival of an unmeasured 'smart_agree' signal (0 live settles) on a 'documented insider pattern' assertion — activity for its own sake, no measured edge.
 
 Working tree clean, HEAD known-good. No proposal clears the bar; ship NOTHING.
+
+2026-06-13 AUTOPILOT: shipped nothing — judge chose nothing: Ship NOTHING. I verified every proposal against on-disk data (paper_account.json 129 settles, learning.json, config.json, brain.json), the live daemon (RSS 1916 MB), the actual code paths, and prior QUANT_LOG verdicts. Zero of the 129 settles are dead-cohort, so the aggregate numbers are admissible, but each proposal fails on grounds beyond era hygiene. None clears the PnL/risk-per-blast-radius bar, and several rest on fabricated or backwards evidence. The honest default applies.
