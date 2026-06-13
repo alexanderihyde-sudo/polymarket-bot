@@ -307,6 +307,9 @@
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
+// chart times come in as UTC epoch seconds; render them in the viewer's LOCAL
+// timezone (Lightweight Charts otherwise labels the axis in UTC)
+const LT = t => new Date((typeof t === "object" ? t : t) * 1000).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 const fmt = v => Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const usd = v => (v < 0 ? "-$" : "$") + fmt(v);
 const signed = v => (v >= 0 ? "+$" : "-$") + fmt(v);
@@ -332,7 +335,7 @@ function renderSmart() {
       layout: { background: { color: "transparent" }, textColor: "#8b8b95", fontSize: 10 },
       grid: { vertLines: { visible: false }, horzLines: { color: "rgba(255,255,255,.055)" } },
       rightPriceScale: { borderColor: "#2c2c33" },
-      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
+      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, tickMarkFormatter: LT, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     });
     brainSk = smartChart.addLineSeries({ color: "#3ad29f", lineWidth: 2, title: "brain" });
     m15Sk = smartChart.addLineSeries({ color: "#b08cff", lineWidth: 2, title: "vs market" });
@@ -392,7 +395,7 @@ function renderCurve() {
               horzLines: { color: "rgba(255,255,255,.055)" } },
       rightPriceScale: { borderColor: "#2c2c33" },
       leftPriceScale: { visible: true, borderColor: "#2c2c33" },
-      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
+      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, tickMarkFormatter: LT, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     });
     cumSeries = curveChart.addLineSeries({ color: "#5b8cff", lineWidth: 2,
       priceScaleId: "right", lastValueVisible: true });
@@ -454,7 +457,7 @@ function initChart() {
     grid: { vertLines: { color: "rgba(255,255,255,.05)" },
             horzLines: { color: "rgba(255,255,255,.07)" } },
     rightPriceScale: { borderColor: "#2c2c33" },
-    timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
+    timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, tickMarkFormatter: LT, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     watermark: { visible: true, text: "POLYMARKET · PAPER", fontSize: 30,
                  color: "rgba(255,255,255,.025)" },
