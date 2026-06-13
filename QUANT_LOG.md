@@ -1617,3 +1617,7 @@ When evidence is backtest-only, already-shipped, overfit to a 3-sample tail, or 
 - quant.kelly_fraction 0.25 -> 0.40; high_probability.risk_per_trade_pct 4.0 (NEW hp-specific) + max_dollars_per_trade 300 -> 450; 1-line code change so hp cap uses its own risk %, not global.
 - Effect: hp per-trade cap $200 -> $400 (2x), more aggressive Kelly. daytrade/news/explore UNCHANGED (global 2% kept). 20% portfolio heat cap + loss breaker intact -> total risk still bounded.
 - Note: high_prob has 0 settled trades yet, so this is a conviction bet on the backtest-validated 96-98.9c favorite edge, not live-proven. Reversible. Suites 226/226+80+chartml+ml green; restarted healthy. Commit 463f8fe.
+
+## 2026-06-13 — manual: kill the sports bleed ("not looking good")
+- Diagnosis: equity flat (-0.10%). ALL loss is sports: -$12.92 sports vs +$2.97 non-sports; explore non-sports +$6.69 @93% vs explore sports -$5.07 @25%. Reset wiped learning.json; explore re-learned blocked_categories=[Sports] but the block only checked the gamma TAG, so untagged foreign football slipped through.
+- Fix: explore/high_prob block now ALSO uses is_sport (_SPORTSY name detector) when Sports is blocked. Removes the entire bleed; bot is net-positive on its real (non-sports) edge. 226/226+80+chartml+ml green. Restarted healthy.
