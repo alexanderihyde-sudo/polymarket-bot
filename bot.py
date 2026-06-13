@@ -658,6 +658,33 @@ def effective_n(trades):
                 for t in trades})
 
 
+# Canonical bet-category keys for the per-category brain specialist layer.
+# Polymarket's raw tags (Sports, Crypto, Politics, Economy, Finance, Business,
+# Pop Culture, Tech, Science, ...) collapse onto the six families the bot
+# specializes by. None when no category is known — the common path, where the
+# category layer is a pure no-op and the GLOBAL model decides alone.
+_CAT_KEY_MAP = {
+    "sports": "sports", "esports": "sports",
+    "crypto": "crypto",
+    "politics": "politics", "elections": "politics", "geopolitics": "politics",
+    "weather": "weather", "climate": "weather",
+    "economy": "macro", "finance": "macro", "business": "macro",
+    "macro": "macro", "fed": "macro", "inflation": "macro",
+    "pop culture": "social", "social": "social", "tech": "social",
+    "science": "social", "mentions": "social", "twitter": "social",
+}
+
+
+def cat_key(category):
+    """Normalize a raw market category label to one canonical specialist key
+    (sports/crypto/weather/politics/macro/social), or None if unknown/absent.
+    Point-in-time only: derived from the category already stamped on the
+    position/opportunity — never recomputed or fetched at decision time."""
+    if not category:
+        return None
+    return _CAT_KEY_MAP.get(str(category).strip().lower())
+
+
 def dead_cohort(s):
     """Settles the CURRENT code is structurally unable to repeat: sports
     entered via the kelly lane, excluded permanently on 06-12. They stay in
@@ -1786,7 +1813,18 @@ def compute_models(account):
                       "importance": BRAIN.get("importance") or {},
                       "n": BRAIN.get("n", 0),
                       "credibility": round(BRAIN.get("n", 0) / (BRAIN.get("n", 0) + 150.0), 2),
-                      "top": brain_top_factors(), "vetoed": MODEL_COUNTS.get("brain", 0)},
+                      "top": brain_top_factors(), "vetoed": MODEL_COUNTS.get("brain", 0),
+                      # per-category specialists: surfaced for the Models tab.
+                      # cw is the partial-pooling weight actually applied at
+                      # decision time; only OOS-positive categories diverge.
+                      "cat_specialists": {
+                          c: {"n": d.get("n", 0),
+                              "oos_skill": d.get("oos_skill"),
+                              "n_eff": d.get("n_eff", 0),
+                              "cw": (round(d["n_eff"] / (d["n_eff"] + 60.0), 3)
+                                     if (d.get("oos_skill") or 0) > 0
+                                     and d.get("n_eff", 0) > 0 else 0.0)}
+                          for c, d in (BRAIN.get("cat_specialists") or {}).items()}},
         "m14_thompson": {"cells": TS_STATE["cells"]},
     }
     try:
@@ -1989,15 +2027,22 @@ def brain_train(account):
         traits = _settle_traits(t)
         for i, p in enumerate(pat_feats):
             x[f"pat{i}"] = 1.0 if set(p.split("&")) <= traits else 0.0
-        rows.append((x, 1.0 if t["pnl"] >= 0 else 0.0, t["strategy"]))
+        rows.append((x, 1.0 if t["pnl"] >= 0 else 0.0, t["strategy"],
+                     cat_key(t.get("category")), t))
     n_eff = effective_n([t for t in account["settled"]
                          if t["strategy"] != "arbitrage"])
     out = {"n": len(rows), "n_eff": n_eff, "w": {}, "specialists": {},
+           "cat_specialists": {},
            "oos": None, "skill_factor": 0.5, "pat_feats": pat_feats}
     if len(rows) < 10:
         return out
-    if BRAIN.get("n") == len(rows) and BRAIN.get("w"):
-        return {k: BRAIN[k] for k in ("n", "n_eff", "w", "specialists", "oos",
+    if (BRAIN.get("n") == len(rows) and BRAIN.get("w")
+            # a BRAIN cached before the per-category layer existed has no
+            # cat_specialists key: it MUST retrain so the category layer is
+            # populated, otherwise the new code would silently never engage.
+            and BRAIN.get("cat_specialists") is not None):
+        return {k: BRAIN[k] for k in ("n", "n_eff", "w", "specialists",
+                                      "cat_specialists", "oos",
                                       "skill_factor", "pat_feats", "kind",
                                       "models", "stack", "cal", "importance",
                                       "calibration_table") if k in BRAIN}
@@ -2006,9 +2051,9 @@ def brain_train(account):
         # the Page-Hinkley detector fired at settle #di: the world the old
         # data describes is gone. Once the new regime has enough labels to
         # stand alone, train on it exclusively (river's window-drop move).
-        data = [(x, y) for x, y, _ in rows[di:]]
+        data = [(x, y) for x, y, *_ in rows[di:]]
     else:
-        data = [(x, y) for x, y, _ in rows]
+        data = [(x, y) for x, y, *_ in rows]
 
     def cv_generic(fit_fn, pred_fn):
         skills, k = [], 5
@@ -2138,16 +2183,77 @@ def brain_train(account):
             w[k2] = round(0.7 * w[k2] + 0.3 * prev.get(k2, 0.0), 4)
     out["w"] = w
     for s in ("high_prob", "news", "explore", "daytrade"):
-        sd = [(x, y) for x, y, st in rows if st == s]
+        sd = [(x, y) for x, y, st, *_ in rows if st == s]
         if len(sd) >= 20:
             out["specialists"][s] = _fit_logistic(sd, l2=best_l2)
+
+    # ---- PER-CATEGORY SPECIALIST LAYER (partial pooling, OOS-gated) --------
+    # The GLOBAL model above is unchanged and remains the prior/fallback. For
+    # each bet category with >=20 dead-cohort-filtered rows we fit its OWN
+    # specialist on that category's rows AND validate it with the SAME
+    # walk-forward CV the global model uses (expanding-window folds, skill vs
+    # the in-fold base rate). We store {w, oos_skill, n_eff, n}; brain_adjust
+    # only blends toward a specialist whose oos_skill>0 — a category that
+    # cannot beat the base rate out-of-sample stays a pure no-op and shrinks
+    # fully to the global model. This is never N independent models: the
+    # global model always trains on ALL rows and is always the fallback.
+    def _cat_cv_skill(cdata, l2):
+        """Walk-forward OOS skill for one category's rows — byte-for-byte the
+        same expanding-window scoring as the global cv_skill, scoped to the
+        category. Returns None when there is too little data to validate."""
+        skills, k = [], 5
+        for f in range(2, k):
+            cut = max(10, int(len(cdata) * f / k))
+            hold = cdata[cut:cut + max(1, len(cdata) // k)]
+            if len(hold) < 5:
+                continue
+            wc = _fit_logistic(cdata[:cut], l2=l2)
+            base = max(0.02, min(0.98, sum(y for _, y in cdata[:cut]) / cut))
+            ll_m = ll_b = 0.0
+            for x, y in hold:
+                p = max(0.02, min(0.98, _predict(wc, x)))
+                ll_m += -(y * math.log(p) + (1 - y) * math.log(1 - p))
+                ll_b += -(y * math.log(base) + (1 - y) * math.log(1 - base))
+            skills.append((ll_b - ll_m) / len(hold))
+        return sum(skills) / len(skills) if skills else None
+
+    by_cat = {}
+    for x, y, st, ck, t in rows:
+        if ck:
+            by_cat.setdefault(ck, []).append((x, y, t))
+    for ck, crows in by_cat.items():
+        if len(crows) < 20:
+            continue
+        cdata = [(x, y) for x, y, _t in crows]
+        # era hygiene: rows already exclude dead_cohort settles, so n_eff
+        # counts living clusters only — a dead-cohort-only category never
+        # reaches 20 rows here and gets n_eff=0 => zero credibility => no-op.
+        ctrades = [_t for _x, _y, _t in crows if not dead_cohort(_t)]
+        oos_skill = _cat_cv_skill(cdata, best_l2)
+        out["cat_specialists"][ck] = {
+            "w": _fit_logistic(cdata, l2=best_l2),
+            "oos_skill": (round(oos_skill, 4) if oos_skill is not None
+                          else None),
+            "n_eff": effective_n(ctrades),
+            "n": len(cdata),
+        }
     return out
 
 
-def brain_adjust(strategy, price, ctx, side=None):
+def brain_adjust(strategy, price, ctx, side=None, category=None):
     """Credibility-weighted sizing tilt from the brain: with little data it
     defers to neutral (x1.0); as settles accumulate its voice grows. Bounded
-    [0.4, 1.6] — it tilts the validated base edge, never replaces it."""
+    [0.4, 1.6] — it tilts the validated base edge, never replaces it.
+
+    PARTIAL POOLING: the GLOBAL model (trained on all rows) is the prior and
+    is always evaluated first, exactly as before. When a `category` is threaded
+    through from the position/opportunity AND that category has earned a
+    specialist with POSITIVE out-of-sample skill, the global probability is
+    blended toward the category specialist, weighted by cw=n_eff/(n_eff+60) —
+    so a category shrinks fully to the global model until it earns divergence
+    out-of-sample. With category=None (the common path), or an OOS-negative /
+    zero-credibility category, this is a PURE no-op: the returned multiplier is
+    byte-identical to the pre-category-layer global model."""
     n, w = BRAIN.get("n", 0), BRAIN.get("w") or {}
     if n < 10 or not w:
         return 1.0
@@ -2179,6 +2285,18 @@ def brain_adjust(strategy, price, ctx, side=None):
         spec = (BRAIN.get("specialists") or {}).get(strategy)
         if spec:
             p_model = 0.5 * (p_model + _predict(spec, x))  # ensemble blend
+    # --- per-category partial pooling (additive, OOS-gated, point-in-time) ---
+    # Threaded from the position/opportunity — never recomputed here. Engages
+    # ONLY when the category specialist beat the base rate out-of-sample
+    # (oos_skill>0) and has nonzero credibility (n_eff>0). Otherwise the global
+    # p_model is left exactly as computed above: a guaranteed no-op.
+    ck = cat_key(category)
+    if ck:
+        cs = (BRAIN.get("cat_specialists") or {}).get(ck)
+        if (cs and cs.get("w") and (cs.get("oos_skill") or 0) > 0
+                and cs.get("n_eff", 0) > 0):
+            cw = cs["n_eff"] / (cs["n_eff"] + 60.0)
+            p_model = (1.0 - cw) * p_model + cw * _predict(cs["w"], x)
     n_eff = BRAIN.get("n_eff", n)   # clusters, not rows: pseudo-replication
     cred = (n_eff / (n_eff + 60.0)  # of one market can't buy credibility...
             * BRAIN.get("skill_factor", 0.5))  # ...and neither can in-sample fit
@@ -3908,13 +4026,17 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
             # research-promoted lane starts at half size: live settled
             # money (by_lane bucket) decides whether it scales to full
             dollars *= lane.get("size_factor", 0.5)
+        # category drives both the per-category brain specialist (point-in-time,
+        # threaded — not recomputed at sizing) and the sports gating below.
+        category = market_category(m)
         adj = 1.0
         if use_kelly:
             adj = brain_adjust(strategy, price,
                                {"spread": stats["spread"],
                                 "imbalance": stats["imbalance"],
                                 "momentum_6h": change,
-                                "hours_to_end": hours_left})
+                                "hours_to_end": hours_left},
+                               category=category)
             if adj <= 0.45:
                 model_acted("brain")
                 continue  # model 13: brain says this context loses
@@ -3932,7 +4054,6 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
             continue  # model 6: filling deep in the book would eat the edge
         price = fill
         band = int(round(price * 100))
-        category = market_category(m)
         time.sleep(0.1)
         q_full = m.get("question", "")
         is_sport = (category == "Sports" or cluster_of(q_full) == "sports-game"
@@ -4609,11 +4730,18 @@ def scan_news(cfg, skip_ids, room, bankroll, blocked_categories=(), multiplier=1
         price = stats["ask"]
         if not 0.10 <= price <= 0.85:
             continue  # too decided already, or junk
+        # category resolved before sizing so the per-category brain specialist
+        # sees it (point-in-time, threaded — not recomputed at decision time).
+        category = market_category(m)
+        time.sleep(0.1)
+        if category in blocked_categories:
+            continue  # learning says news trades in this category lose
         dollars = min(ncfg.get("max_dollars_per_trade", 5.0) * multiplier, bankroll)
         adj = brain_adjust("news", price,
                            {"spread": stats["spread"],
                             "imbalance": stats["imbalance"], "move_1h": ch},
-                           side=(jlist(m.get("outcomes")) + ["Yes", "No"])[side])
+                           side=(jlist(m.get("outcomes")) + ["Yes", "No"])[side],
+                           category=category)
         if adj <= 0.45:
             model_acted("brain")
             continue  # model 13: brain says this context loses
@@ -4629,10 +4757,6 @@ def scan_news(cfg, skip_ids, room, bankroll, blocked_categories=(), multiplier=1
                 continue   # the chartist fades overextensions, never breakouts
         stop = round(price - ncfg.get("stop_drop", 0.06), 3)
         target = round(price + ncfg.get("target_gain", 0.10), 3)
-        category = market_category(m)
-        time.sleep(0.1)
-        if category in blocked_categories:
-            continue  # learning says news trades in this category lose
         skip_ids = set(skip_ids) | {ev_id}
         out.append({
             "strategy": strategy, "event_id": ev_id or None, "category": category,
@@ -4755,10 +4879,15 @@ def daytrade_loop(cfg, account):
                               risk_shares * price,   # risk/stop-distance
                               strategy_budget(cfg, account, "daytrade"))
                 dollars *= bm["dd_factor"]
+                # one category read, threaded into both the per-category brain
+                # specialist and the opportunity record (no recompute, no
+                # second network call at decision time).
+                dt_category = market_category(m)
                 adj = brain_adjust("daytrade", price,
                                    {"spread": sb["spread"],
                                     "imbalance": sb["imbalance"],
-                                    "move_1h": move})
+                                    "move_1h": move},
+                                   category=dt_category)
                 if adj <= 0.45:
                     continue
                 shares = int(min(sb["ask_size"], dollars * adj / price))
@@ -4766,7 +4895,7 @@ def daytrade_loop(cfg, account):
                     continue
                 opp = {
                     "strategy": "daytrade", "event_id": None,
-                    "category": market_category(m),
+                    "category": dt_category,
                     "context": dict({"move_5m": round(move, 3),
                                      "spread": sb["spread"],
                                      "imbalance": sb["imbalance"],
@@ -5657,6 +5786,108 @@ def self_test():
     ok("xmkt feature weight ~0 when signal never present",
        abs((bt_a.get("w") or {}).get("xmkt_div", 0.0)) < 1e-6
        and abs((bt_a.get("w") or {}).get("xmkt_cmp", 0.0)) < 1e-6)
+
+    # ===== PER-CATEGORY BRAIN SPECIALIST LAYER (partial pooling, OOS-gated) ===
+    # The hard rule, tightened: the GLOBAL model must be byte-identical AFTER
+    # adding the category layer, proven on a FIXED MIXED-CATEGORY dataset (not
+    # just on category-free data). The category layer is purely additive and
+    # gated — the global model trains on all rows exactly as before.
+    def _mixed_fixture():
+        cats = ["Crypto", "Sports", "Politics", "Weather", "Economy", "Other"]
+        rws = []
+        for i in range(120):
+            cat = cats[i % len(cats)]
+            imb = 0.9 if (i % 2 == 0) else 0.1       # global signal: imb wins
+            rws.append({"strategy": "news", "pnl": (1.0 if imb > 0.5 else -1.0),
+                        "entry_price": 0.5, "side": "Yes",
+                        "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+                        "name": "%s-mkt-%d" % (cat, i), "category": cat,
+                        "context": {"imbalance": imb, "spread": 0.01,
+                                    "hours_to_end": 12}})
+        return {"settled": rws}
+    saved_for_cat = dict(BRAIN)
+    bt_mix = brain_train(_mixed_fixture())
+    # (1a) the GLOBAL cv_skill on the FIXED MIXED data is exactly the golden
+    #      pre-category-layer value: the category layer did not touch training.
+    ok("cat: GLOBAL cv_skill byte-identical on fixed MIXED data (0.6729)",
+       (bt_mix.get("oos") or {}).get("cv_skill") == 0.6729)
+    # (1b) the GLOBAL weights are unchanged on the same mixed data (golden bias).
+    ok("cat: GLOBAL weights unchanged on fixed MIXED data",
+       (bt_mix.get("w") or {}).get("bias") == 1.5314
+       and (bt_mix.get("w") or {}).get("imb") == 1.5094)
+    # (1c) brain_adjust(category=None) — the common path — is byte-identical to
+    #      the golden pre-category value on the same mixed-trained brain.
+    BRAIN.clear(); BRAIN.update(bt_mix)
+    a_none_mix = brain_adjust("news", 0.6,
+                              {"imbalance": 0.9, "spread": 0.01,
+                               "hours_to_end": 12}, "Yes")
+    ok("cat: brain_adjust(category=None) byte-identical on MIXED data",
+       a_none_mix == 1.0693144597232576)
+    # (1d) and identical to passing a category whose specialist has NOT earned
+    #      divergence (oos_skill None at n=20/category) — additive+gated no-op.
+    a_cat_inert = brain_adjust("news", 0.6,
+                               {"imbalance": 0.9, "spread": 0.01,
+                                "hours_to_end": 12}, "Yes", category="Crypto")
+    ok("cat: OOS-unearned category == category=None (pure no-op)",
+       a_cat_inert == a_none_mix)
+
+    # (2) OOS-NEGATIVE category is a no-op. Build a brain where one category's
+    #     specialist is forced OOS-negative; brain_adjust must ignore it.
+    BRAIN.clear(); BRAIN.update(bt_mix)
+    base_adj = brain_adjust("news", 0.6, {"imbalance": 0.9, "spread": 0.01,
+                                          "hours_to_end": 12}, "Yes")
+    spec_w = dict((bt_mix["cat_specialists"]["crypto"])["w"])
+    spec_w["bias"] = spec_w.get("bias", 0.0) + 5.0   # would pull adj UP if used
+    BRAIN["cat_specialists"] = {"crypto": {"w": spec_w, "oos_skill": -0.01,
+                                           "n_eff": 40, "n": 60}}
+    ok("cat: OOS-negative specialist is ignored (no-op)",
+       brain_adjust("news", 0.6, {"imbalance": 0.9, "spread": 0.01,
+                                  "hours_to_end": 12}, "Yes",
+                    category="Crypto") == base_adj)
+    # (3) dead-cohort-only category => n_eff=0 => no-op even with oos_skill>0.
+    BRAIN["cat_specialists"] = {"crypto": {"w": spec_w, "oos_skill": 0.5,
+                                           "n_eff": 0, "n": 0}}
+    ok("cat: n_eff=0 (dead-cohort-only) category is a no-op",
+       brain_adjust("news", 0.6, {"imbalance": 0.9, "spread": 0.01,
+                                  "hours_to_end": 12}, "Yes",
+                    category="Crypto") == base_adj)
+    # (4) a category with REAL OOS skill DIVERGES: same w but oos_skill>0 and
+    #     n_eff>0 must move the multiplier away from the global no-op value.
+    BRAIN["cat_specialists"] = {"crypto": {"w": spec_w, "oos_skill": 0.5,
+                                           "n_eff": 40, "n": 60}}
+    div_adj = brain_adjust("news", 0.6, {"imbalance": 0.9, "spread": 0.01,
+                                         "hours_to_end": 12}, "Yes",
+                           category="Crypto")
+    ok("cat: OOS-positive + credible category DIVERGES from global",
+       div_adj != base_adj)
+    # and an unknown / unmapped category never engages the layer.
+    ok("cat: unknown category falls back to global (no-op)",
+       brain_adjust("news", 0.6, {"imbalance": 0.9, "spread": 0.01,
+                                  "hours_to_end": 12}, "Yes",
+                    category="Nonexistent") == base_adj)
+    # (5) ERA HYGIENE / LEAKAGE: dead_cohort rows never enter a specialist.
+    dc_fix = {"settled":
+        [{"strategy": "high_prob", "pnl": (1.0 if i % 2 else -1.0),
+          "entry_price": 0.92, "side": "Yes", "category": "Sports",
+          "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+          "name": "Lakers vs. Celtics %d" % i,
+          "context": {"lane": "r90", "imbalance": 0.9, "spread": 0.01}}
+         for i in range(40)]}
+    bt_dc = brain_train(dc_fix)
+    ok("cat: dead-cohort sports rows never form a specialist (era hygiene)",
+       "sports" not in (bt_dc.get("cat_specialists") or {}))
+    # (6) cat_key normalization is point-in-time and total over the families.
+    ok("cat: cat_key maps raw tags onto the six families",
+       cat_key("Crypto") == "crypto" and cat_key("Economy") == "macro"
+       and cat_key("Pop Culture") == "social" and cat_key("Esports") == "sports"
+       and cat_key(None) is None and cat_key("Nonexistent") is None)
+    # (7) stale BRAIN without cat_specialists forces a retrain (cache fix).
+    BRAIN.clear()
+    BRAIN.update({k: v for k, v in bt_mix.items() if k != "cat_specialists"})
+    bt_retrain = brain_train(_mixed_fixture())
+    ok("cat: stale BRAIN lacking cat_specialists forces a retrain",
+       bt_retrain.get("cat_specialists"))
+    BRAIN.clear(); BRAIN.update(saved_for_cat)
 
     random.seed(42)
     tset = {"settled": [{"strategy": "explore", "pnl": 0.1, "entry_price": 0.9,

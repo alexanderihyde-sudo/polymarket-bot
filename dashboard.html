@@ -807,7 +807,12 @@ function render() {
          (m.m11_patterns || {}).active_vetoes ? "warn" : "") +
       mc("12 · slide exits", m.m12_slide_exits ?? 0, m.m12_slide_exits ? "warn" : "") +
       ((b => b ? mc("13 · brain", `${b.n} trades learned · credibility ${Math.round(b.credibility * 100)}% · ${b.vetoed ?? 0} vetoed`, "good") +
-        (b.top || []).map(t => mc("13 · learned", t)).join("") : "")(m.m13_brain)) +
+        (b.top || []).map(t => mc("13 · learned", t)).join("") +
+        Object.entries(b.cat_specialists || {}).sort((a, b) => (b[1].oos_skill || 0) - (a[1].oos_skill || 0)).map(([c, d]) => {
+          const sk = d.oos_skill == null ? "n/a" : d.oos_skill.toFixed(3);
+          const live = d.cw > 0;
+          return mc(`13 · ${c}`, `n=${d.n} · OOS ${sk} · ${live ? `cw ${d.cw.toFixed(2)} (diverging)` : "shrunk to global"}`, live ? "good" : "");
+        }).join("") : "")(m.m13_brain)) +
       mc("14 · thompson explorer", `${(m.m14_thompson || {}).cells ?? 0} cells mapped`, "good");
   } else $("models").innerHTML = '<div class="empty">model state appears after the next scan</div>';
 
