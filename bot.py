@@ -5774,6 +5774,10 @@ def daytrade_loop(cfg, account):
                 if not cf or cf["chart_pattern"] not in ("spike_fade",
                                                          "mean_dev"):
                     continue
+                if is_in_game(m):
+                    continue  # the game is LIVE — jump risk, the move model's
+                    # mean-reversion assumption breaks down (parity with
+                    # scan_news at line 5611)
                 # learned chart gate (model 16): trained on 5,675 recorded
                 # moves, OOS skill +0.075 on a 1,703-event chronological
                 # holdout — fade only what history says actually reverts
