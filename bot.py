@@ -1915,6 +1915,25 @@ BRAIN_FACTORS = {"nsent": "headline sentiment",
                  "news": "news strategy", "explore": "explorer trade"}
 
 
+# Per-category SPORTS feature keys added to _brain_x. They default to EXACTLY
+# 0.0 on the common path, but to keep the GLOBAL model (logistic + zoo/MLP)
+# byte-identical to its pre-sports feature space — the MLP's weight init and the
+# tree splits both depend on the exact set of input dimensions — these keys are
+# STRIPPED from the global training/prediction vector (_global_x) and survive
+# ONLY in the per-category sports specialist, which is the only learner allowed
+# to weight them. Absent a sports specialist with earned OOS skill, they are a
+# pure no-op and the global/common path is unchanged.
+SPORTS_X_KEYS = ("sb_cons", "elo_fv", "sb_div", "gpost")
+
+
+def _global_x(x):
+    """The global model's view of a feature vector: identical to the pre-sports
+    feature space. Strips the per-category sports keys so the global logistic,
+    GBM/XGB, forest and MLP train and predict on exactly the dimensions they did
+    before the sports features existed (byte-identical common path)."""
+    return {k: v for k, v in x.items() if k not in SPORTS_X_KEYS}
+
+
 def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
     """One trade's entry context as a numeric feature vector."""
     ctx = ctx or {}
@@ -1958,6 +1977,27 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         "xmkt_cmp": (0.0 if ctx.get("xmkt_consensus") is None or price is None
                      else max(-1.0, min(1.0,
                               (ctx["xmkt_consensus"] - price) * 3.0))),
+        # PER-CATEGORY SPORTS features. ALL DEFAULT EXACTLY NEUTRAL (0.0) when
+        # the sports context is absent — i.e. every non-sports market and every
+        # sports market with no signal — so the global/common path is unchanged
+        # and the golden regression fixtures are byte-identical. These fire only
+        # for sports markets that carry sports_* context, and only the OOS-gated
+        # sports specialist ever weights them. All point-in-time (see
+        # sports_features): live game-state is banned, post-game abstains.
+        # sb_cons: signed sportsbook-consensus edge vs price (de-vigged Odds API)
+        "sb_cons": (0.0 if ctx.get("sportsbook_consensus") is None
+                    or price is None
+                    else max(-1.0, min(1.0,
+                             (ctx["sportsbook_consensus"] - price) * 3.0))),
+        # elo_fv: signed Elo fair-value edge vs price (finals-trained, immutable)
+        "elo_fv": (0.0 if ctx.get("sports_elo_fv") is None or price is None
+                   else max(-1.0, min(1.0,
+                            (ctx["sports_elo_fv"] - price) * 3.0))),
+        # sb_div: normalized (price - sportsbook_consensus) divergence, [-1,1]
+        "sb_div": max(-1.0, min(1.0, (ctx.get("sports_div") or 0.0) * 3.0)),
+        # gpost: post-game risk flag — joined ESPN game already final (abstain
+        # territory); 0.0 pre-game / unknown (live never reaches the trade path).
+        "gpost": 1.0 if ctx.get("sports_post") else 0.0,
     } | (lambda cl: {
         "cl_weather": 1.0 if cl == "weather" else 0.0,
         "cl_sports": 1.0 if cl == "sports-game" else 0.0,
@@ -2047,13 +2087,18 @@ def brain_train(account):
                                       "models", "stack", "cal", "importance",
                                       "calibration_table") if k in BRAIN}
     di = BRAIN.get("drift_i") or 0
+    # GLOBAL training/CV/zoo data uses the pre-sports feature space (_global_x):
+    # the per-category sports keys are stripped here so the global logistic, the
+    # zoo (GBM/XGB/forest) and the MLP train on byte-identical dimensions to
+    # before. The full vector (with sports keys) is kept on `rows` for the
+    # per-category sports specialist below.
     if di and len(rows) - di >= 40:
         # the Page-Hinkley detector fired at settle #di: the world the old
         # data describes is gone. Once the new regime has enough labels to
         # stand alone, train on it exclusively (river's window-drop move).
-        data = [(x, y) for x, y, *_ in rows[di:]]
+        data = [(_global_x(x), y) for x, y, *_ in rows[di:]]
     else:
-        data = [(x, y) for x, y, *_ in rows]
+        data = [(_global_x(x), y) for x, y, *_ in rows]
 
     def cv_generic(fit_fn, pred_fn):
         skills, k = [], 5
@@ -2182,8 +2227,12 @@ def brain_train(account):
         for k2 in w:                           # yesterday's knowledge
             w[k2] = round(0.7 * w[k2] + 0.3 * prev.get(k2, 0.0), 4)
     out["w"] = w
+    # the per-STRATEGY specialists are part of the GLOBAL path (brain_adjust
+    # blends them into p_model on the no-stack branch), so they too train on the
+    # stripped pre-sports feature space — only the per-CATEGORY sports
+    # specialist below is allowed to carry the sports keys.
     for s in ("high_prob", "news", "explore", "daytrade"):
-        sd = [(x, y) for x, y, st, *_ in rows if st == s]
+        sd = [(_global_x(x), y) for x, y, st, *_ in rows if st == s]
         if len(sd) >= 20:
             out["specialists"][s] = _fit_logistic(sd, l2=best_l2)
 
@@ -2266,6 +2315,9 @@ def brain_adjust(strategy, price, ctx, side=None, category=None):
         traits = _settle_traits(probe)
         for i, p in enumerate(pats):
             x[f"pat{i}"] = 1.0 if set(p.split("&")) <= traits else 0.0
+    # the GLOBAL model sees the pre-sports feature space (byte-identical common
+    # path); only the per-category sports specialist below sees the sports keys.
+    xg = _global_x(x)
     stack = BRAIN.get("stack") or []
     models = BRAIN.get("models") or {}
     if stack:
@@ -2273,18 +2325,18 @@ def brain_adjust(strategy, price, ctx, side=None, category=None):
         p_model = 0.0
         for name, wt in stack:
             try:
-                p_model += wt * (ml.predict(models[name], x)
-                                 if name in models else _predict(w, x))
+                p_model += wt * (ml.predict(models[name], xg)
+                                 if name in models else _predict(w, xg))
             except Exception:
-                p_model += wt * _predict(w, x)
+                p_model += wt * _predict(w, xg)
         p_model /= tot_w
         if BRAIN.get("cal"):
             p_model = ml.apply_cal(BRAIN["cal"], p_model)
     else:
-        p_model = _predict(w, x)
+        p_model = _predict(w, xg)
         spec = (BRAIN.get("specialists") or {}).get(strategy)
         if spec:
-            p_model = 0.5 * (p_model + _predict(spec, x))  # ensemble blend
+            p_model = 0.5 * (p_model + _predict(spec, xg))  # ensemble blend
     # --- per-category partial pooling (additive, OOS-gated, point-in-time) ---
     # Threaded from the position/opportunity — never recomputed here. Engages
     # ONLY when the category specialist beat the base rate out-of-sample
@@ -2317,14 +2369,19 @@ def brain_online_learn(pos, pnl):
         x = _brain_x(pos["strategy"], pos.get("entry_price"),
                      pos.get("context"), pos["legs"][0].get("outcome"),
                      now_utc().isoformat(), pos.get("name"))
+        # BRAIN["w"] is the GLOBAL logistic over the pre-sports feature space:
+        # update it on the stripped vector so online learning never injects the
+        # per-category sports keys into the global model (keeps it byte-identical
+        # in dimension; the sports keys live only in the sports specialist).
+        xg = _global_x(x)
         y = 1.0 if pnl >= 0 else 0.0
-        p = max(0.02, min(0.98, _predict(BRAIN["w"], x)))
+        p = max(0.02, min(0.98, _predict(BRAIN["w"], xg)))
         ph = BRAIN.setdefault("ph", ml.ph_new())
         if ml.ph_update(ph, -(y * math.log(p) + (1 - y) * math.log(1 - p))):
             BRAIN["drift_i"] = BRAIN.get("n", 0)
             journal("DRIFT", detector="page-hinkley",
                     at_settle=BRAIN["drift_i"], total_drifts=ph["drifts"])
-        ml.sgd_step(BRAIN["w"], x, y, g2=BRAIN.setdefault("g2", {}))
+        ml.sgd_step(BRAIN["w"], xg, y, g2=BRAIN.setdefault("g2", {}))
     except Exception:
         pass
 
@@ -3343,6 +3400,135 @@ def sportsedge_loop():
         time.sleep(1200)
 
 
+# ------------------------------------------- per-category SPORTS feature read
+# CATEGORY SPECIALIST FEED for "sports". Reads three point-in-time, fail-silent
+# sources at decision time and exposes them as neutral-defaulting context, which
+# _brain_x lifts into the feature vector for the sports category specialist to
+# learn (OOS-gated). It NEVER touches the global path: every field defaults to
+# the exact neutral that makes _brain_x's sports features 0.0, so a market with
+# no sports signal — the common case, and EVERY non-sports market — is
+# byte-identical to before.
+#
+# LEAKAGE: every read is point-in-time. (1) game_state_risk reads the ESPN
+# scoreboard state AS OF NOW (pre|post; live banned per rules). (2) elo_fair_value
+# reads SPORTSEDGE["ratings"], which are trained ONLY on finals already seen
+# before this decision (immutable per decision time, never the current game's
+# result). (3) sportsbook_consensus / spread_vs_consensus_div come from the
+# concurrent de-vigged Odds-API snapshot (already in `xm`), never a final score.
+# Post-game markets abstain (state="post" -> abstain flag); live is never traded.
+
+SPORTS_BOARD_TTL = 300            # ESPN scoreboard cached 5 min (point-in-time)
+
+
+def _sports_board_cached():
+    """Today's ESPN board across the whitelist leagues, cached & fail-silent.
+    Reuses _espn_board (governed get_json, all states). Returns [] on any
+    error so a dead ESPN can never stall or crash the scan."""
+    def fetch():
+        try:
+            return _espn_board() or []
+        except Exception:
+            return []
+    return _cached(("sports_board",), SPORTS_BOARD_TTL, fetch) or []
+
+
+def _sports_game_state(m, board):
+    """ESPN scoreboard state for this market's game, point-in-time: 'pre',
+    'in', 'post', or None when no confident single-game join. Same token-join
+    the sportsedge shadow uses (one board game sharing a team token)."""
+    try:
+        outs = jlist(m.get("outcomes"))
+        if len(outs) != 2 or not board:
+            return None
+        day = _se_market_day(m)
+        a_tok, b_tok = sportsedge._tok(outs[0]), sportsedge._tok(outs[1])
+        cand = [e for e in board if e["date"] == day
+                and ((a_tok & sportsedge._tok(e["home"]))
+                     or (a_tok & sportsedge._tok(e["away"]))
+                     or (b_tok & sportsedge._tok(e["home"]))
+                     or (b_tok & sportsedge._tok(e["away"])))]
+        if len(cand) != 1:
+            return None
+        mkt = {"question": m.get("question") or "", "league": cand[0]["league"],
+               "date": day, "outcomes": outs}
+        if sportsedge.join_event(mkt, board) is None:
+            return None
+        return cand[0].get("state")
+    except Exception:
+        return None
+
+
+def _sports_elo_fair_value(m, fav):
+    """Polymarket-trained Elo fair value for the FAVORED outcome (fav index),
+    read point-in-time from SPORTSEDGE['ratings'] (trained only on finals
+    already seen). Returns a probability in (0,1) for outcome[fav], or None
+    when either team is unrated / unmodelable. Pure read — never fits here."""
+    try:
+        outs = jlist(m.get("outcomes"))
+        if len(outs) != 2:
+            return None
+        ratings = (SPORTSEDGE.get("ratings") or {})
+        if not ratings:
+            return None
+        # map each outcome name to its best-matching rated team token-overlap
+        def rate(name):
+            ntok = sportsedge._tok(name)
+            best, bj = None, 0
+            for team, r in ratings.items():
+                j = len(ntok & sportsedge._tok(team))
+                if j > bj:
+                    best, bj = r, j
+            return best if bj > 0 else None
+        ra, rb = rate(outs[0]), rate(outs[1])
+        if ra is None or rb is None:
+            return None
+        p0 = sportsedge.elo_expect(ra, rb)         # P(outcome[0] wins)
+        return p0 if fav == 0 else (1.0 - p0)
+    except Exception:
+        return None
+
+
+def sports_features(m, price, fav, xm=None):
+    """Point-in-time sports feature read for one market, attached to the entry
+    context of SPORTS markets only. ALL fields default neutral (None) so a
+    non-sports market — or a sports market with no signal — leaves _brain_x's
+    sports features at exactly 0.0 and the global/common path byte-identical.
+
+      sports_state:        'pre'|'in'|'post'|None  (ESPN scoreboard, now)
+      sports_post:         True only when the joined game is already final
+      sportsbook_consensus: median de-vigged moneyline P(fav) from The Odds API
+                            (via the live xmkt snapshot; neutral with no key)
+      sports_elo_fv:       Elo fair value P(fav) (immutable, finals-trained)
+      sports_div:          (price - sportsbook_consensus), capped [-1,1]
+
+    Fail-silent and cached; a dead source yields None, never an exception."""
+    out = {"sports_state": None, "sports_post": None,
+           "sportsbook_consensus": None, "sports_elo_fv": None,
+           "sports_div": None}
+    try:
+        board = _sports_board_cached()
+        st = _sports_game_state(m, board)
+        if st is not None:
+            out["sports_state"] = st
+            # live in-game is BANNED per rules; post-game abstains entirely.
+            out["sports_post"] = (st == "post")
+        out["sports_elo_fv"] = _sports_elo_fair_value(m, fav)
+        # sportsbook consensus rides the existing de-vigged Odds-API snapshot
+        # already gathered for the xmkt twin (key-gated; absent -> None). fav==0
+        # means consensus_p is already P(outcome[0]); otherwise complement it.
+        xm = xm or {}
+        cons = xm.get("consensus_p") if "oddsapi" in (xm.get("sources") or []) \
+            else None
+        if cons is not None:
+            cons = cons if fav == 0 else (1.0 - cons)
+            out["sportsbook_consensus"] = cons
+            if price is not None:
+                out["sports_div"] = max(-1.0, min(1.0, price - cons))
+    except Exception:
+        pass
+    return out
+
+
 # ----------------------------------------- cross-market consensus instrument
 # A self-grading instrument that reads OTHER prediction markets (Kalshi /
 # PredictIt / Manifold real- and play-money) plus optional sportsbook
@@ -4089,6 +4275,16 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         # features default neutral and sizing is unchanged. fav==0 means we
         # back outcome[0], so divergence/consensus are already pm_p-aligned.
         xm = xmkt_lookup(m, price) if fav == 0 else {}
+        # PER-CATEGORY SPORTS feature read (point-in-time, fail-silent). Only for
+        # sports markets; for everything else sf stays the all-None neutral that
+        # leaves _brain_x's sports features at 0.0 and the global path unchanged.
+        # Reads ESPN scoreboard (game state) + finals-trained Elo + the live
+        # de-vigged Odds-API snapshot already in `xm`. No future data: see
+        # sports_features docstring. fav-aligned so all edges are P(fav).
+        sf = (sports_features(m, price, fav, xm) if is_sport
+              else {"sports_state": None, "sports_post": None,
+                    "sportsbook_consensus": None, "sports_elo_fv": None,
+                    "sports_div": None})
         exit_keys = {}
         if strategy == "explore":
             # NO stop: a $1 stake is its own insurance (max loss = cost), and
@@ -4169,6 +4365,14 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                         "xmkt_consensus": xm.get("consensus_p"),
                         "xmkt_divergence": xm.get("divergence"),
                         "xmkt_sources": xm.get("sources"),
+                        # per-category SPORTS features (point-in-time; all None
+                        # for non-sports markets -> _brain_x neutral 0.0 -> the
+                        # sports specialist learns them, global path unchanged).
+                        "sportsbook_consensus": sf["sportsbook_consensus"],
+                        "sports_elo_fv": sf["sports_elo_fv"],
+                        "sports_div": sf["sports_div"],
+                        "sports_state": sf["sports_state"],
+                        "sports_post": sf["sports_post"],
                         "sports_probe": 1 if sports_probe else None},
             "name": m["question"],
             "legs": [{"market_id": str(m["id"]), "question": m["question"],
@@ -5787,6 +5991,108 @@ def self_test():
        abs((bt_a.get("w") or {}).get("xmkt_div", 0.0)) < 1e-6
        and abs((bt_a.get("w") or {}).get("xmkt_cmp", 0.0)) < 1e-6)
 
+    # ---- SPORTS PER-CATEGORY FEATURE REGRESSION + LEAKAGE GUARD --------------
+    # The weave adds sports_* features (sportsbook consensus, Elo fair value,
+    # divergence, post-game flag) to _brain_x + a sports-only entry-context hook.
+    # HARD RULE: on the COMMON path (non-sports market / no sports signal ->
+    # sports ctx None) the model is IDENTICAL to before. We prove neutrality,
+    # the explicit-None==absent sentinel, signed/capped edges, the post-game
+    # flag, and point-in-time leakage safety.
+    sx_plain = _brain_x("news", 0.6, base_ctx, "Yes")
+    ok("sports features default neutral (0.0) with no sports ctx",
+       sx_plain.get("sb_cons") == 0.0 and sx_plain.get("elo_fv") == 0.0
+       and sx_plain.get("sb_div") == 0.0 and sx_plain.get("gpost") == 0.0)
+    # explicit None sports fields read identically to their absence (common path)
+    sx_none = _brain_x("news", 0.6, dict(base_ctx, sportsbook_consensus=None,
+                                         sports_elo_fv=None, sports_div=None,
+                                         sports_post=None, sports_state=None),
+                       "Yes")
+    ok("sports: explicit None == absent (common path byte-identical)",
+       sx_none == sx_plain)
+    # signed edges: consensus/Elo above the entry price -> positive, capped [-1,1]
+    sx_book = _brain_x("news", 0.6, dict(base_ctx, sportsbook_consensus=0.8),
+                       "Yes")
+    ok("sports: sportsbook edge signs and caps (book>price -> +, <=1)",
+       0 < sx_book["sb_cons"] <= 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, sportsbook_consensus=0.99),
+                    "Yes", )["sb_cons"] == 1.0)
+    sx_elo = _brain_x("news", 0.6, dict(base_ctx, sports_elo_fv=0.3), "Yes")
+    ok("sports: Elo fair-value edge signs (fv<price -> negative)",
+       sx_elo["elo_fv"] < 0)
+    # post-game flag fires only when the joined game is final (abstain territory)
+    ok("sports: post-game flag fires only for finals",
+       _brain_x("news", 0.6, dict(base_ctx, sports_post=True), "Yes")["gpost"]
+       == 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, sports_post=False),
+                    "Yes")["gpost"] == 0.0)
+    # brain_adjust byte-identical with sports ctx absent vs explicit None
+    BRAIN.update(bt)
+    sa_absent = brain_adjust("news", 0.6, base_ctx, "Yes")
+    sa_none = brain_adjust("news", 0.6, dict(base_ctx, sportsbook_consensus=None,
+                                             sports_elo_fv=None, sports_div=None,
+                                             sports_post=None), "Yes")
+    ok("sports: brain_adjust identical when sports ctx absent vs None",
+       sa_absent == sa_none)
+    BRAIN.update(saved_brain)
+    # sports features stay weight ~0 when never present in training (inert)
+    ok("sports: feature weights ~0 when signal never present",
+       abs((bt_a.get("w") or {}).get("sb_cons", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("elo_fv", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("sb_div", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("gpost", 0.0)) < 1e-6)
+    # LEAKAGE: sports_features is point-in-time + fail-silent. A market with no
+    # game-state, no rated teams, and no key yields the all-neutral dict (never
+    # an exception, never a future read). _espn_board/_sports_board_cached are
+    # never called here (we pass empty board) -> deterministic no-network proof.
+    _sf_none = sports_features({"outcomes": "[\"Yes\", \"No\"]",
+                                "question": "Will it rain tomorrow?"},
+                               0.6, 0, {})
+    ok("sports: fail-silent neutral with no game-state / rating / key",
+       all(_sf_none[k] is None for k in
+           ("sportsbook_consensus", "sports_elo_fv", "sports_div",
+            "sports_post")))
+    # de-vigged sportsbook consensus only enters when the Odds API is a source
+    # (key-gated); a twin without oddsapi never sets sportsbook_consensus.
+    ok("sports: sportsbook consensus requires the Odds-API source (key-gated)",
+       sports_features({"outcomes": "[\"A\", \"B\"]", "question": "A vs B"},
+                       0.6, 0,
+                       {"consensus_p": 0.7, "sources": ["kalshi"]}
+                       )["sportsbook_consensus"] is None
+       and sports_features({"outcomes": "[\"A\", \"B\"]", "question": "A vs B"},
+                           0.6, 0,
+                           {"consensus_p": 0.7, "sources": ["oddsapi"]}
+                           )["sportsbook_consensus"] == 0.7)
+    # fav-alignment: backing outcome[1] complements the consensus (P(fav))
+    ok("sports: consensus is fav-aligned (fav==1 complements)",
+       abs(sports_features({"outcomes": "[\"A\", \"B\"]", "question": "A vs B"},
+                           0.6, 1,
+                           {"consensus_p": 0.7, "sources": ["oddsapi"]}
+                           )["sportsbook_consensus"] - 0.3) < 1e-9)
+    # END-TO-END WIRING: a sports category whose outcome is driven by the
+    # sportsbook-consensus edge forms a specialist that ACTUALLY WEIGHTS the
+    # sports keys, while the GLOBAL model never sees them (its w/specialists are
+    # strictly the pre-sports feature space). Proves the feature is learned by
+    # the right learner and isolated from the global one.
+    sports_fix = {"settled": [
+        {"strategy": "news", "pnl": (1.0 if i % 2 == 0 else -1.0),
+         "entry_price": 0.5, "side": "Yes", "category": "Sports",
+         "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+         "name": "Lakers vs. Celtics %d" % i,
+         "context": {"imbalance": 0.5, "spread": 0.01, "hours_to_end": 12,
+                     # consensus far above price on winners, below on losers:
+                     "sportsbook_consensus": (0.9 if i % 2 == 0 else 0.1),
+                     "sports_state": "pre"}}
+        for i in range(60)]}
+    bt_sp = brain_train(sports_fix)
+    sp = (bt_sp.get("cat_specialists") or {}).get("sports") or {}
+    ok("sports: specialist learns the sportsbook-consensus key (sb_cons!=0)",
+       abs((sp.get("w") or {}).get("sb_cons", 0.0)) > 1e-3)
+    ok("sports: GLOBAL model carries NO sports keys (feature space isolated)",
+       all(k not in (bt_sp.get("w") or {}) for k in SPORTS_X_KEYS)
+       and all(k not in (m or {})
+               for m in (bt_sp.get("specialists") or {}).values()
+               for k in SPORTS_X_KEYS))
+
     # ===== PER-CATEGORY BRAIN SPECIALIST LAYER (partial pooling, OOS-gated) ===
     # The hard rule, tightened: the GLOBAL model must be byte-identical AFTER
     # adding the category layer, proven on a FIXED MIXED-CATEGORY dataset (not
@@ -6338,6 +6644,15 @@ def attribution(account):
                                  else ("pm>consensus" if ctx(t)["xmkt_divergence"] > 0.05
                                        else "pm<consensus" if ctx(t)["xmkt_divergence"] < -0.05
                                        else "aligned")),
+        # SPORTS specialist attribution: how trades fared when the sportsbook
+        # consensus / Elo fair value disagreed with the entry price. None for
+        # every non-sports trade (no sports_div context) so the bucket stays
+        # scoped to the sports category.
+        "by_sports": bucket(rows, lambda t: None
+                            if ctx(t).get("sports_div") is None
+                            else ("price>book" if ctx(t)["sports_div"] > 0.03
+                                  else "price<book" if ctx(t)["sports_div"] < -0.03
+                                  else "aligned")),
         "by_sentiment": bucket(rows, lambda t: None if ctx(t).get("news_sent") is None
                                else ("pos" if ctx(t)["news_sent"] > 0
                                      else "neg" if ctx(t)["news_sent"] < 0 else "neutral")),
