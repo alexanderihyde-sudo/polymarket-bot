@@ -2406,18 +2406,29 @@ def brain_train(account):
     # cannot beat the base rate out-of-sample stays a pure no-op and shrinks
     # fully to the global model. This is never N independent models: the
     # global model always trains on ALL rows and is always the fallback.
-    def _cat_cv_skill(cdata, l2):
+    def _cat_cv_skill(cbases, cmeta, ylist, l2):
         """Walk-forward OOS skill for one category's rows — byte-for-byte the
-        same expanding-window scoring as the global cv_skill, scoped to the
-        category. Returns None when there is too little data to validate."""
+        same expanding-window scoring as the global cv_skill (cv_generic),
+        scoped to the category, with FOLD-LOCAL pattern mining. The pat*
+        columns are re-derived from each fold's TRAIN trades only
+        (cmeta[:cut]), so the per-category skill estimate is not inflated by
+        the globally-mined patterns bleeding into the holdout. cbases are the
+        pat-free base vectors, cmeta are aligned (trade, traits) pairs, ylist
+        the aligned labels. Returns None when there is too little data."""
         skills, k = [], 5
+        n = len(cbases)
         for f in range(2, k):
-            cut = max(10, int(len(cdata) * f / k))
-            hold = cdata[cut:cut + max(1, len(cdata) // k)]
-            if len(hold) < 5:
+            cut = max(10, int(n * f / k))
+            hi = cut + max(1, n // k)
+            if min(n, hi) - cut < 5:
                 continue
-            wc = _fit_logistic(cdata[:cut], l2=l2)
-            base = max(0.02, min(0.98, sum(y for _, y in cdata[:cut]) / cut))
+            pats = _top_pat_feats([t for t, _tr in cmeta[:cut]])
+            tr = [(_add_pat_feats(dict(cbases[i]), cmeta[i][1], pats),
+                   ylist[i]) for i in range(cut)]
+            hold = [(_add_pat_feats(dict(cbases[i]), cmeta[i][1], pats),
+                     ylist[i]) for i in range(cut, min(n, hi))]
+            wc = _fit_logistic(tr, l2=l2)
+            base = max(0.02, min(0.98, sum(y for _, y in tr) / len(tr)))
             ll_m = ll_b = 0.0
             for x, y in hold:
                 p = max(0.02, min(0.98, _predict(wc, x)))
@@ -2427,18 +2438,26 @@ def brain_train(account):
         return sum(skills) / len(skills) if skills else None
 
     by_cat = {}
-    for x, y, st, ck, t, _tr in rows:
+    for x, y, st, ck, t, tr in rows:
         if ck:
-            by_cat.setdefault(ck, []).append((x, y, t))
+            by_cat.setdefault(ck, []).append((x, y, t, tr))
     for ck, crows in by_cat.items():
         if len(crows) < 20:
             continue
-        cdata = [(x, y) for x, y, _t in crows]
+        cdata = [(x, y) for x, y, _t, _tr in crows]
+        # FOLD-LOCAL inputs for the honest OOS estimate: pat-free base vectors
+        # plus per-row (trade, traits) so each CV fold re-mines its OWN pat*
+        # columns from train trades alone. The final specialist below still
+        # keeps the GLOBAL pat columns baked on (correct: no holdout in the
+        # all-rows fit), exactly as the global brain's deployed models do.
+        cbases = [_strip_pats(x) for x, _y, _t, _tr in crows]
+        cmeta = [(_t, _tr) for _x, _y, _t, _tr in crows]
+        ylist = [y for _x, y, _t, _tr in crows]
         # era hygiene: rows already exclude dead_cohort settles, so n_eff
         # counts living clusters only — a dead-cohort-only category never
         # reaches 20 rows here and gets n_eff=0 => zero credibility => no-op.
-        ctrades = [_t for _x, _y, _t in crows if not dead_cohort(_t)]
-        oos_skill = _cat_cv_skill(cdata, best_l2)
+        ctrades = [_t for _x, _y, _t, _tr in crows if not dead_cohort(_t)]
+        oos_skill = _cat_cv_skill(cbases, cmeta, ylist, best_l2)
         out["cat_specialists"][ck] = {
             "w": _fit_logistic(cdata, l2=best_l2),
             "oos_skill": (round(oos_skill, 4) if oos_skill is not None
