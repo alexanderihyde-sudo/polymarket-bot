@@ -1612,3 +1612,8 @@ When evidence is backtest-only, already-shipped, overfit to a 3-sample tail, or 
 - Root cause of the un-gated 2: both daytrade paths faded moves WITHOUT checking news_backed. news-backed moves drift on the information; fading them is "how fades die" (the flag's own docstring). Daytrade ran at full size (mult 1.0) because the learning throttle only kicks in at 8 settles (had 4).
 - Fix (978c6b3): added `news_backed()` skip to BOTH the fast daytrade_loop and the slow scan path, parity with is_in_game. Additive gate, no safety rail touched. All 4 suites green (226/226 + 80 + chartml + ml). With this + the in-game gate, all 4 historical daytrade loss modes are now structurally gated.
 2026-06-13 AUTOPILOT: shipped nothing — adversarial review killed it: failed review (1/3 cleared). commit 6e98b1a
+
+## 2026-06-13 — manual: bigger heavy-favorite (high_prob) sizing (user request)
+- quant.kelly_fraction 0.25 -> 0.40; high_probability.risk_per_trade_pct 4.0 (NEW hp-specific) + max_dollars_per_trade 300 -> 450; 1-line code change so hp cap uses its own risk %, not global.
+- Effect: hp per-trade cap $200 -> $400 (2x), more aggressive Kelly. daytrade/news/explore UNCHANGED (global 2% kept). 20% portfolio heat cap + loss breaker intact -> total risk still bounded.
+- Note: high_prob has 0 settled trades yet, so this is a conviction bet on the backtest-validated 96-98.9c favorite edge, not live-proven. Reversible. Suites 226/226+80+chartml+ml green; restarted healthy. Commit 463f8fe.
