@@ -1429,3 +1429,49 @@ learner (training rows AND credibility) unchanged.
   out-of-sample, at which point it engages automatically.
 
 Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
+
+## 2026-06-13 — Per-category MACRO API features (FRED) shipped
+
+**What.** Gave the `macro` specialist its own point-in-time feature set sourced from
+FRED (Federal Reserve Economic Data), added as a hierarchical/partial-pooling
+layer that shrinks fully to the global model until the category earns divergence
+out-of-sample. Three features, all defaulting EXACTLY neutral (0.0) when absent:
+- `m_ratedev` (macro_rate_dev): market-implied Fed-rate target (parsed % from the
+  question) minus the latest DFF observation, scaled to [-1.5, 1.5].
+- `m_cpisurp` (macro_cpi_surprise): YoY CPI vs a contemporaneous consensus carried
+  on the market, normalized by a 0.5% basis, clipped [-1.5, 1.5].
+- `m_yieldsig` (macro_yield_signal): 10Y-2Y (DGS10-DGS2) spread regime —
+  -1.0 inverted / -0.5 flat / 0.0 normal / 0.5 steep.
+
+**Connector.** `_fred_latest`/`_fred_value`/`macro_features` — KEY-GATED (reads
+`FRED_API_KEY` from os.environ; absent -> every read returns [] / None silently,
+so all three features stay neutral and the global path is unchanged). Governed via
+`get_json`/`_governor`, timeout-bounded (20s), cached 1h, fail-silent (a dead or
+key-less source yields None, never an exception or a stall).
+
+**Wiring.** `is_macro` detection (cat_key=="macro" or rate/CPI/yield subject
+regexes) gates a macro-only entry-context read; the three `macro_*` ctx fields are
+attached to opportunities. `_brain_x` maps them to `m_ratedev/m_cpisurp/m_yieldsig`,
+defaulting 0.0 when absent. `MACRO_X_KEYS` added to `_CAT_X_KEYS` so `_global_x`
+STRIPS them from the global logistic/zoo/MLP view — they survive ONLY in the
+OOS-gated macro specialist. brain_adjust's per-category partial pooling already
+engages the macro specialist when (and only when) it earns oos_skill>0 with n_eff>0.
+
+**Leakage / era hygiene.** Point-in-time verified: FRED observations publish with a
+real lag (CPI ~12d, DFF ~1d) so the latest available value carries no forward
+knowledge; rate/CPI expectation is today's market consensus, not a forecast; the
+yield curve is the latest published Treasury yields. dead_cohort() remains threaded
+through every per-category learner (training rows AND credibility). The specialist
+is a pure no-op until 20+ living-cohort labels beat the base rate OOS.
+
+**Global no-regression (proven).** Golden global cv_skill on the FIXED MIXED-category
+fixture: 0.6729 BEFORE == 0.6729 AFTER; golden global weights unchanged
+(bias 1.5314, imb 1.5094); zero macro keys in the global w or any per-strategy
+specialist. 14 new macro tests (neutrality, explicit-None==absent sentinel,
+signed/scaled/capped values, key-gating silent-skip, fail-silent no-network leakage,
+point-in-time FRED read skipping missing "." values, end-to-end specialist learning
++ feature-space isolation).
+
+**Gates.** bot.py 214/214, tests.py 80/80, chartml.py ALL PASS, ml.py ALL PASS.
+crossmarket.py untouched. Committed (FEATURE: macro API features). Restarted
+pause-fenced; /api/health ok + balanced, exactly one bot.
