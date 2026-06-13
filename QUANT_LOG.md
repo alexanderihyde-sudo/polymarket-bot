@@ -1562,3 +1562,15 @@ in-game ban, probe rail, or loss breaker touched.
 ok=true, audit=balanced, age_seconds≈17. Exactly 1 python + 1 caffeinate confirmed. Watchdog
 re-armed (pause flag removed). Equity before=$9999.63, after=$9999.59 (mark drift only).
 Settles at ship: 34. Marked pending_unproven=true — promotion to be judged on future live settles.
+
+2026-06-13 AUTOPILOT: shipped nothing — judge chose nothing: Ship NOTHING. No proposal clears the bar; two violate hard rules, one guards an untriggerable path, and the cleanest delivers no measurable PnL.
+
+Proposal 1 (uncap Kelly) is forbidden: line 4837 `dollars = min(dollars, max_dollars)` is an explicit per-trade risk rail (code comment lines 4698-4699: a hold-to-resolution binary's full stake is capped at ~1% of bankroll). Removing it lets single positions reach $335-516 (3.35-5.16% of bankroll, 1.7-2.6x larger) — weakening a risk rail. The evidence is pure backtest seed data (research_results.json, observational, no live settles), and the live paper_account has ZERO high_prob settles in any band: the bands 91-94 it wants to upsize have never produced a single live settle. Sizing-up on a backtest directly contradicts 'Live settled money outranks every backtest' and 'Promotion decides sizing, not enthusiasm.'
+
+Proposal 2 (cap Platt a) rests on mistaken evidence. Its edit target, line 2329, is `out['cal'] = ml.fit_isotonic(preds)` — the isotonic branch, which has no `a` parameter, so the guard would not reliably touch Platt. The brain's cal only feeds p_model on the stack branch, and the resulting tilt is credibility-shrunk (n_eff=9 -> cred ~= 9/69*0.5 ~= 0.065) and hard-bounded to [0.4,1.6] in brain_adjust (line 2473). The claimed 'inflates Kelly sizing by ~40%' misrepresents the mechanism; there is no such direct sizing channel. Weak, mislocated.
+
+Proposal 4 (dead_cohort guard in brain_online_learn) targets a real but untriggerable gap. Verified: lane r90 settles = 0; the only 2 open Sports positions have lane=None (not dead-cohort) and are explore-strategy. No dead-cohort position can settle to trigger this path, and brain_train's walk-forward CV (which has the filter, commit 8c3c994) would cleanse any contamination at next retrain. The proposal itself admits 'Current live risk low.' Guarding an untriggerable path is activity for its own sake.
+
+Proposal 3 (sportsedge esports filter) is the cleanest — genuinely shadow-only ('Trades NOTHING', line 3906), touches no gate or rail — but its own evidence shows near-zero value: 'No direct P&L impact in shadow mode,' ~$0.10-0.50/week eventual indirect impact, from a single thin 2026-06-13 measurement. Low blast radius but no measured PnL. Plumbing, not a win.
+
+When evidence is backtest-only, misdiagnosed, untriggerable, or PnL-negligible, the honest default is to ship nothing.
