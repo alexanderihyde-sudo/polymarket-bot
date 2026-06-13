@@ -1605,3 +1605,9 @@ P3 (HN created_at_i truthiness) is a real but speculative latent bug: line 3761 
 When evidence is backtest-only, already-shipped, overfit to a 3-sample tail, or an unmanifested latent bug, the honest default is to ship nothing.
 
 2026-06-13 AUTOPILOT: shipped nothing — adversarial review killed it: failed review (0/3 cleared). commit cd6aaa0
+
+## 2026-06-13 — manual fix: daytrade stop bleeding (user "it's losing")
+- Diagnosis: account ~flat (-0.07%, $9,992.63). Sole bleed = daytrade 0/4, -$11.40. explore +$4.05 (77), arb/high_prob flat.
+- The 4 daytrade losers: 2 Sports (Rockies, Stuttgart — in-game stop-outs, ALREADY gated by is_in_game c9e5d59) + 2 Politics (Trump, Iran — faded news-driven event moves that drifted).
+- Root cause of the un-gated 2: both daytrade paths faded moves WITHOUT checking news_backed. news-backed moves drift on the information; fading them is "how fades die" (the flag's own docstring). Daytrade ran at full size (mult 1.0) because the learning throttle only kicks in at 8 settles (had 4).
+- Fix (978c6b3): added `news_backed()` skip to BOTH the fast daytrade_loop and the slow scan path, parity with is_in_game. Additive gate, no safety rail touched. All 4 suites green (226/226 + 80 + chartml + ml). With this + the in-game gate, all 4 historical daytrade loss modes are now structurally gated.
