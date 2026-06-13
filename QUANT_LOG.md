@@ -1574,3 +1574,18 @@ Proposal 4 (dead_cohort guard in brain_online_learn) targets a real but untrigge
 Proposal 3 (sportsedge esports filter) is the cleanest — genuinely shadow-only ('Trades NOTHING', line 3906), touches no gate or rail — but its own evidence shows near-zero value: 'No direct P&L impact in shadow mode,' ~$0.10-0.50/week eventual indirect impact, from a single thin 2026-06-13 measurement. Low blast radius but no measured PnL. Plumbing, not a win.
 
 When evidence is backtest-only, misdiagnosed, untriggerable, or PnL-negligible, the honest default is to ship nothing.
+
+---
+
+## 2026-06-13 — Cycle 2 — SHIPPED: in-game Sports gate in daytrade fast loop
+
+**Commit:** c9e5d59 "AUTOPILOT: gate in-game Sports out of daytrade fast loop"
+**Rollback target:** HEAD~1 (ef6632b)
+
+**Change:** Inserted `if is_in_game(m): continue` in `daytrade_loop()` (bot.py ~line 5776), before the `chartml.move_predict` call. Reuses the existing, well-tested `is_in_game()` (defined line 4602). This brings the fast daytrade loop to parity with `scan_news()` which already gates in-game markets (line 5611). +4 lines (1 logical gate + comment), no other code touched.
+
+**Evidence (live settled money — strongest class):** paper_account.json shows exactly 2 daytrade settles, BOTH Sports, BOTH losses: -$4.50 and -$3.35 = -$7.85 total, 0% win rate (2/2). Both had strong chartml revert signals (0.76, 0.607) yet lost — in-game Sports are jump-process prices where the move model's mean-reversion assumption (trained on 6,955 labeled events, 63.4% base revert, +0.0994 OOS skill on 1,703-event chronological holdout) breaks down. The slow scan_news path already gates this; the fast daytrade loop did not. dead_cohort() present (line 688) for era hygiene; the 2 daytrade settles are current-code-producible.
+
+**Why safe / blast radius:** Low. This strictly TIGHTENS daytrade entry — it removes/weakens no safety gate, rail, or breaker. Pure gate ADDITION. No impact on high_prob, news, explore, arbitrage. Pre-game and non-Sports daytrade opportunities unaffected. Model unchanged; only its deployment gate improved.
+
+**Verification tally:** ast.parse SYNTAX OK; is_in_game def confirmed (line 4602); scan_news parity gate confirmed (line 5611); gate placement before move_predict confirmed (live line 5779). Post-restart health: ok=true, audit=balanced, age_seconds=16.7. Bot proc count (wc -l)=2 (python+caffeinate), python-only=1. HEAD=c9e5d59, working tree clean. Pre-ship cash $9399.88; post-ship cash $9399.88 (no settles during restart). pending_unproven=true — promotion to higher confidence only after live settled confirmation.
