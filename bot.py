@@ -2188,7 +2188,7 @@ def brain_train(account):
         rows.append((x, 1.0 if t["pnl"] >= 0 else 0.0, t["strategy"],
                      cat_key(t.get("category")), t))
     n_eff = effective_n([t for t in account["settled"]
-                         if t["strategy"] != "arbitrage"])
+                         if t["strategy"] != "arbitrage" and not dead_cohort(t)])
     out = {"n": len(rows), "n_eff": n_eff, "w": {}, "specialists": {},
            "cat_specialists": {},
            "oos": None, "skill_factor": 0.5, "pat_feats": pat_feats}
