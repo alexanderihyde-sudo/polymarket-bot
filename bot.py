@@ -4905,8 +4905,15 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                 continue   # one probe per EVENT — no exact-score stacking,
                 # within this scan AND across scans (held event ids seeded)
             sports_probe = True
-        elif category in blocked_categories:
-            continue  # the bot learned this market type loses money
+        elif category in blocked_categories or (
+                is_sport and "Sports" in blocked_categories):
+            continue  # the bot learned this market type loses money. Use the
+            # name-based is_sport flag (already _SPORTSY/cluster/gameStartTime
+            # aware) so a blocked Sports cohort also catches sport-shaped
+            # markets whose gamma category tag is missing/wrong (e.g. obscure
+            # foreign football: Vaasan Palloseura, FF Jaro/HJK) — those slipped
+            # the tag-only check and were the entire live loss (-$12.92 sports
+            # vs +$2.97 everything else).
         if cat_counts.get(category, 0) >= cat_cap:
             continue  # concentration limit reached for this market type
         cat_counts[category] = cat_counts.get(category, 0) + 1
