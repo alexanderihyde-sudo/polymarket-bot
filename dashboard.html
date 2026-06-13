@@ -332,7 +332,7 @@ function renderSmart() {
       layout: { background: { color: "transparent" }, textColor: "#8b8b95", fontSize: 10 },
       grid: { vertLines: { visible: false }, horzLines: { color: "rgba(255,255,255,.055)" } },
       rightPriceScale: { borderColor: "#2c2c33" },
-      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001 },
+      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     });
     brainSk = smartChart.addLineSeries({ color: "#3ad29f", lineWidth: 2, title: "brain" });
     m15Sk = smartChart.addLineSeries({ color: "#b08cff", lineWidth: 2, title: "vs market" });
@@ -392,7 +392,7 @@ function renderCurve() {
               horzLines: { color: "rgba(255,255,255,.055)" } },
       rightPriceScale: { borderColor: "#2c2c33" },
       leftPriceScale: { visible: true, borderColor: "#2c2c33" },
-      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001 },
+      timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     });
     cumSeries = curveChart.addLineSeries({ color: "#5b8cff", lineWidth: 2,
       priceScaleId: "right", lastValueVisible: true });
@@ -444,19 +444,6 @@ function renderCurve() {
   rollSeries.setData(rd);
   if (sharpeSeries) sharpeSeries.setData(sharpeData());
   if (firstCurve) applyRange();
-  // lock the two charts together: zoom/pan either, both move
-  if (chart && !window.__synced) {
-    window.__synced = true;
-    let guard = false;
-    const mirror = (from, to) => from.timeScale().subscribeVisibleTimeRangeChange(r => {
-      if (guard || !r) return;
-      guard = true;
-      try { to.timeScale().setVisibleRange(r); } catch (e) {}
-      guard = false;
-    });
-    mirror(chart, curveChart);
-    mirror(curveChart, chart);
-  }
 }
 function initChart() {
   if (chart || !window.LightweightCharts) return;
@@ -467,7 +454,7 @@ function initChart() {
     grid: { vertLines: { color: "rgba(255,255,255,.05)" },
             horzLines: { color: "rgba(255,255,255,.07)" } },
     rightPriceScale: { borderColor: "#2c2c33" },
-    timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001 },
+    timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     watermark: { visible: true, text: "POLYMARKET · PAPER", fontSize: 30,
                  color: "rgba(255,255,255,.025)" },
@@ -497,13 +484,29 @@ function initChart() {
     updateLegend(v ? (v.value ?? v.close) : null);
   });
 }
+function rangeCutoff() {
+  const sec = { "1H": 3600, "6H": 21600, "24H": 86400 }[RANGE];   // undefined => ALL
+  return sec ? (Date.now() / 1000 - sec) : -Infinity;
+}
+function downsample(pts) {
+  // this LWC build won't zoom past ~(pane width / 6) bars, so keep the point
+  // count at/below that — otherwise older points clip off the left and every
+  // range collapses to the most-recent sliver. Always keep the final point.
+  const cap = chart ? Math.max(40, Math.floor(chart.timeScale().width() / 6) - 2) : 120;
+  if (pts.length <= cap) return pts;
+  const out = [], stride = pts.length / cap;
+  for (let i = 0; i < cap; i++) out.push(pts[Math.floor(i * stride)]);
+  if (out[out.length - 1] !== pts[pts.length - 1]) out.push(pts[pts.length - 1]);
+  return out;
+}
 function chartData() {
-  const out = []; let last = -1;
+  const cut = rangeCutoff(), out = []; let last = -1;
   for (const h of (S && S.history || [])) {
     const t = Math.floor(new Date(h.t).getTime() / 1000);
-    if (t > last) { out.push({ time: t, value: h.total }); last = t; }
+    if (t <= last) continue; last = t;
+    if (t >= cut) out.push({ time: t, value: h.total });
   }
-  return out;
+  return downsample(out);
 }
 function updateLegend(hover) {
   const d = chartData(); if (d.length < 2) return;
@@ -517,52 +520,39 @@ function renderChart() {
   const d = chartData(); if (!d.length) return;
   eqSeries.applyOptions({ baseValue: { type: "price", price: S.account.starting_cash } });
   window.__eqTimes = d.map(p => p.time);
-  if (d.length !== lastHistLen) {
-    const firstLoad = lastHistLen === -1;
+  // rebuild when the range OR the underlying history changes (downsampled length
+  // alone can't see history growth, so key on the raw history length)
+  const key = RANGE + ":" + ((S.history || []).length);
+  if (key !== window.__chartKey) {
+    window.__chartKey = key;
     eqSeries.setData(d);
+    const cut = rangeCutoff();
     if (stratSeries) for (const k of Object.keys(stratSeries)) {
       const sd = []; let last = -1;
       for (const h of (S.history || [])) {
         if (!h.strat || h.strat[k] == null) continue;
         const t = Math.floor(new Date(h.t).getTime() / 1000);
-        if (t > last) { sd.push({ time: t, value: h.strat[k] }); last = t; }
+        if (t <= last) continue; last = t;
+        if (t >= cut) sd.push({ time: t, value: h.strat[k] });
       }
-      stratSeries[k].setData(sd);
+      stratSeries[k].setData(downsample(sd));
     }
-    lastHistLen = d.length;
-    // fit the view only on first load; afterwards the live SSE stream glides
-    // the right edge in via series.update() with no jarring re-fit on each tick
-    if (firstLoad) applyRange();
+    [chart, curveChart, smartChart].filter(Boolean).forEach(c => { try { c.timeScale().fitContent(); } catch (e) {} });
   }
-  // no stale poll-update here: the 400ms SSE tick owns the live right edge
+  // the 400ms SSE tick refreshes the last bar in place (see liveStream)
   updateLegend();
 }
 function applyRange() {
-  const charts = [chart, curveChart, smartChart].filter(Boolean);
-  if (RANGE === "ALL") {
-    // explicit full span: fitContent silently clips when minBarSpacing
-    // can't fit every point in the pane width
-    const t0 = (window.__eqTimes && __eqTimes[0]) || null;
-    const t1 = (window.__eqTimes && __eqTimes[__eqTimes.length - 1]) || null;
-    charts.forEach(c => {
-      try {
-        if (t0 && t1 && t1 > t0) c.timeScale().setVisibleRange({ from: t0, to: t1 });
-        else c.timeScale().fitContent();
-      } catch (e) { c.timeScale().fitContent(); }
-    });
-    return;
-  }
-  const sec = { "1H": 3600, "6H": 21600, "24H": 86400 }[RANGE];
-  const to = Math.floor(Date.now() / 1000);
-  for (const c of charts) {
-    try { c.timeScale().setVisibleRange({ from: to - sec, to }); }
-    catch (e) { console.warn("range", e); }
-  }
+  // the data is already filtered to RANGE (chartData), so just fit the window
+  [chart, curveChart, smartChart].filter(Boolean).forEach(c => {
+    try { c.timeScale().fitContent(); } catch (e) {}
+  });
 }
 document.querySelectorAll(".rbtn").forEach(b => b.addEventListener("click", () => {
   RANGE = b.dataset.r;
   document.querySelectorAll(".rbtn").forEach(x => x.classList.toggle("on", x === b));
-  applyRange();
+  window.__chartKey = null;                 // force the series to re-filter to the new range
+  if (S) { renderChart(); renderCurve(); renderSmart(); }
 }));
 
 /* ── tables ─────────────────────────────────────────────────── */
@@ -904,12 +894,12 @@ setInterval(refresh, 2000);
       $("total").className = "px num " + cls(diff);
       $("chg").textContent = `${signed(diff)} (${diff >= 0 ? "+" : ""}${(100 * diff / S.account.starting_cash).toFixed(2)}%)`;
       $("chg").className = "chg num " + cls(diff);
-      // equity line: stream the tick straight into the chart
+      // equity line: refresh the LAST bar in place (do NOT spawn a new 1s bar
+      // each tick — that floods the series with fine bars and collapses the
+      // visible window). A new bar is added by the poll when real history grows.
       if (eqSeries && window.__eqTimes && window.__eqTimes.length) {
-        if (now > window.__eqTimes[window.__eqTimes.length - 1]) {
-          window.__eqTimes.push(now);
-        }
-        try { eqSeries.update({ time: now, value: tk.total }); } catch (err) {}
+        const lastT = window.__eqTimes[window.__eqTimes.length - 1];
+        try { eqSeries.update({ time: lastT, value: tk.total }); } catch (err) {}
       }
       $("foot-upd").textContent = "live · " + new Date().toLocaleTimeString();
     };
