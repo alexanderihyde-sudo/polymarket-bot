@@ -30,6 +30,13 @@ const RULES = [
 
 const R = (body) => RULES + '\n\n=== YOUR TASK ===\n' + body
 
+// Every commit a TRAINER cycle makes is authored as TRAINER, so the audit trail stays
+// separable from the sibling AUTOPILOT loop. The two share this repo + git config, whose
+// default identity is AUTOPILOT; we override per-commit instead of changing the repo config
+// (which must stay AUTOPILOT for AUTOPILOT's own commits). `-c user.name/user.email` sets
+// BOTH author and committer for that one invocation (no GIT_*_NAME env vars are in play).
+const GIT_AS_TRAINER = 'git -c user.name=TRAINER -c user.email=trainer@local'
+
 // ============================================================== SCHEMAS
 const GATE_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -129,7 +136,7 @@ const trainPrompt = R([
   '',
   '1. Refresh the bot models on the latest data using the bot\'s own validated training (these do OOS champion selection internally): `cd ~/polymarket-bot && python3 bot.py mlmodel 2>&1 | tail -30` and `python3 bot.py lab 400 2>&1 | tail -20`. (They may run alongside the daemon\'s own training; atomic writes make that safe.)',
   '2. Capture the OOS metrics into a snapshot: from the mlmodel output and ~/polymarket-bot/market_model.json read skill_vs_market, brier_market, brier (model champion); from ~/polymarket-bot/brain.json and models_state.json read the brain champion kind and its oos/cv_skill and n; from /api/health read the sportsedge verdict; n_settles = length of the settled array in paper_account.json.',
-  '3. Append ONE dated row to ~/polymarket-bot/TRAIN_LOG.md (create it if missing) in the form: "YYYY-MM-DD HH:MM UTC | n=<settles> | brain_skill=<x> champ=<kind> | mkt_skill_vs_price=<x> brier_model=<x> brier_mkt=<x> | sportsedge=<verdict> | note". Commit ONLY that file: `git add TRAIN_LOG.md && git commit -q -m "TRAINER: metrics" && git push origin master 2>&1 | tail -1 || true`.',
+  '3. Append ONE dated row to ~/polymarket-bot/TRAIN_LOG.md (create it if missing) in the form: "YYYY-MM-DD HH:MM UTC | n=<settles> | brain_skill=<x> champ=<kind> | mkt_skill_vs_price=<x> brier_model=<x> brier_mkt=<x> | sportsedge=<verdict> | note". Commit ONLY that file: `git add TRAIN_LOG.md && ' + GIT_AS_TRAINER + ' commit -q -m "TRAINER: metrics" && git push origin master 2>&1 | tail -1 || true`.',
   '4. REGRESSION CHECK: compare to the previous TRAIN_LOG row. If brain_skill or mkt_skill dropped materially (e.g., skill fell > 0.02 or went negative), set regression_flag=true and say so loudly in notes.',
   '5. IMPROVE GATE: set improve_gate_open=true ONLY if there is genuine room to improve this cycle — i.e. regression_flag is true, OR at least 10 NEW settles have accrued since the last TRAINER ship (read trainer_state.json if present for the last count), OR a clear calibration/skill deficiency is visible in the metrics. Otherwise improve_gate_open=false (the honest default right after a reset, when there is little new data).',
   'Return {recorded, metrics, regression_flag, improve_gate_open, new_settles, notes}.',
@@ -160,7 +167,7 @@ const buildPrompt = (chosen) => R([
   '1. Make the MINIMAL change. If it would require leakage, an era-hygiene break, or weakening a safety rail, ABORT: `git checkout -- . && rm -f .autopilot_pause`, built=false.',
   '2. Retrain and read the CHALLENGER OOS skill: `python3 bot.py mlmodel 2>&1 | tail -20` (and `python3 bot.py lab 400` if relevant). Capture the new skill_vs_market / cv_skill.',
   '3. Run `python3 bot.py test` && `python3 tests.py` && `python3 chartml.py` && `python3 ml.py`. If ANY is not fully green, OR the challenger OOS skill is NOT >= incumbent by a real margin: `git checkout -- . && rm -f .autopilot_pause`, built=false (record incumbent_skill and challenger_skill so the judge of record can see why).',
-  '4. If green AND challenger beats/ties incumbent OOS: `git add -A && git commit -m "TRAINER: <title>"`, then `rm -f .autopilot_pause`. built=true, commit, files, test_summary, incumbent_skill, challenger_skill, diffstat=`git show --stat HEAD`.',
+  '4. If green AND challenger beats/ties incumbent OOS: `git add -A && ' + GIT_AS_TRAINER + ' commit -m "TRAINER: <title>"`, then `rm -f .autopilot_pause`. built=true, commit, files, test_summary, incumbent_skill, challenger_skill, diffstat=`git show --stat HEAD`.',
   'NEVER touch .env/.envtab. Never edit a test to pass. Always clear .autopilot_pause before returning.',
 ].join('\n'))
 
@@ -183,7 +190,7 @@ const shipPrompt = (chosen) => R([
   '4. If BAD: `git reset --hard HEAD~1`, restart the same way, sleep 12, re-verify on the reverted code. shipped=false, rolled_back=true.',
   '5. ALWAYS once healthy: `rm -f .autopilot_pause`.',
   '6. If shipped: write ~/polymarket-bot/trainer_state.json {"last_ship_commit":"<hash>","last_ship_ts":"<date -u +%FT%TZ>","settles_at_last_ship":<settled length>,"champion_challenger":"<incumbent->challenger skills>"}.',
-  '7. Append a dated entry to ~/polymarket-bot/TRAIN_LOG.md (what shipped, incumbent vs challenger OOS skill, test tally, rollback commit HEAD~1), commit ONLY that file, and `git push origin master 2>&1 | tail -1 || true`.',
+  '7. Append a dated entry to ~/polymarket-bot/TRAIN_LOG.md (what shipped, incumbent vs challenger OOS skill, test tally, rollback commit HEAD~1), then commit ONLY that file: `git add TRAIN_LOG.md && ' + GIT_AS_TRAINER + ' commit -q -m "TRAINER: ship log" && git push origin master 2>&1 | tail -1 || true`.',
   'Return {shipped, rolled_back, reason, commit, champion_challenger, health_after}. Change: ' + JSON.stringify(chosen),
 ].join('\n'))
 
