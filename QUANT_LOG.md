@@ -1621,3 +1621,20 @@ When evidence is backtest-only, already-shipped, overfit to a 3-sample tail, or 
 ## 2026-06-13 — manual: kill the sports bleed ("not looking good")
 - Diagnosis: equity flat (-0.10%). ALL loss is sports: -$12.92 sports vs +$2.97 non-sports; explore non-sports +$6.69 @93% vs explore sports -$5.07 @25%. Reset wiped learning.json; explore re-learned blocked_categories=[Sports] but the block only checked the gamma TAG, so untagged foreign football slipped through.
 - Fix: explore/high_prob block now ALSO uses is_sport (_SPORTSY name detector) when Sports is blocked. Removes the entire bleed; bot is net-positive on its real (non-sports) edge. 226/226+80+chartml+ml green. Restarted healthy.
+
+## 2026-06-13 — AUTOPILOT: shipped nothing
+AUTOPILOT: shipped nothing — judge chose nothing: Verified every proposal against the live code and paper_account.json; all six fail. Shipping nothing is the honest action this cycle.
+
+P1 (Kelly fix) is mathematically WRONG and would be actively harmful. I checked bot.py:1231 with exact-fraction algebra over thousands of points: the current formula `f = p - (1-p)*price/(1-price)` is EXACTLY the standard Kelly risk-fraction for a Polymarket buy-a-share-at-`price` binary bet (identical to `(b*p-q)/b` with `b=(1-price)/price`). The proposed replacement `p*(1-price)-(1-p)*price` algebraically simplifies to just `p - price` (expected profit per share, not a bankroll fraction), which would undersize ~5-12x. The scout's 'verification' used the wrong payoff structure (symmetric two-sided stake, not Polymarket's). The code is already correct. Also moot: high_prob has only n=1 clean settle.
+
+P2 (brain_adjust) misrepresents the formula. bot.py:2473 uses `1.0 + 2.0*cred*(p_model - price)` where `p_model` (lines 2450-2469) is the brain's LEARNED logistic/specialist probability, not the raw quote. It sizes up on positive model edge — correct direction. The scout's worked example substitutes a constant 0.505 for p_model, dropping the model term entirely; that is a fabrication. Medium blast radius (all strategies) on n=1 high_prob + dead-cohort daytrade is unjustified.
+
+P3 (defund daytrade -> explore) violates era hygiene. All 5 daytrade losses (-$12.50) are dead cohort under current gates: 2 are in-game Sports `vs.` fades blocked by is_in_game (bot.py:5789) + the tightened Sports block, and 3 are news-backed Politics fades blocked by news_backed (bot.py:5793, shipped today at 05:58 whose commit cites 'exactly the Politics daytrade stop-outs we just took'). Daytrade has ZERO clean post-gate settles, so judging it negative counts trades the current code cannot reproduce. The explore side is real (non-sports n=97 +$7.83) but explore uses fixed $1 stakes and is nowhere near its $1000 sub-account cap, so the $1000->$1500 bump is cosmetic. Can't ship the sound half without the unsound half.
+
+P4 (sports_probe on weather) has a false premise. sports_probe=1 is set only inside `if is_sport and use_kelly` (bot.py:4896/4907). For the flagged weather markets, current is_sport is False: category is Weather (not Sports), `_SPORTSY` (bot.py:4623) doesn't match 'highest temperature' names, cluster_of returns 'weather' not 'sports-game' (CLUSTERS bot.py:1760, weather ordered first), and weather markets have no gameStartTime. I verified the regex returns False on all 8 names. So HEAD cannot tag weather as sports_probe; the 8 tags are a legacy cohort from older broader detection. The proposed `and category=='Sports'` gate would also narrow the probe to tag-only Sports, reintroducing the missing-tag blind spot the codebase just closed for obscure foreign football.
+
+P5 (chartml lookback) is refuted by data: it claims all 5 daytrade settles have chart_ml=None, but all 5 have chart_ml populated (0.76, 0.607, 0.55, 0.541, 0.555). chartml already executes on daytrade entries (bot.py:5800). Premise false.
+
+P6 (wallet TTL 6h->1h) is the weakest (conf 0.72): speculative revival of an unmeasured 'smart_agree' signal (0 live settles) on a 'documented insider pattern' assertion — activity for its own sake, no measured edge.
+
+Working tree clean, HEAD known-good. No proposal clears the bar; ship NOTHING.
