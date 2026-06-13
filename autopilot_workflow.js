@@ -31,9 +31,10 @@ const R = (body) => RULES + '\n\n=== YOUR TASK ===\n' + body
 // ============================================================== SCHEMAS
 const GATE_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['clear', 'reason', 'health_ok', 'tests_green', 'new_settles_since_ship', 'current_settle_count'],
+  required: ['clear', 'deferred', 'reason', 'health_ok', 'tests_green', 'new_settles_since_ship', 'current_settle_count'],
   properties: {
     clear: { type: 'boolean', description: 'true = AUTOPILOT may attempt a change this cycle' },
+    deferred: { type: 'boolean', description: 'true = another loop (TRAINER) holds the lock; skip without touching it' },
     reason: { type: 'string' },
     health_ok: { type: 'boolean' },
     tests_green: { type: 'boolean' },
@@ -122,7 +123,8 @@ const SUBSYSTEMS = [
 const gatePrompt = R([
   'Decide whether AUTOPILOT may ATTEMPT a code change this cycle. No feature edits — but you MUST run the housekeeping/recovery commands below.',
   '',
-  '0. HOUSEKEEPING (recovers from any interrupted prior cycle): `cd ~/polymarket-bot && rm -f .autopilot_pause && git checkout -- . 2>/dev/null`. This discards any half-written edit left on disk, so the working tree again equals HEAD (known-good code). Then ensure a supervisor is alive: `pgrep -f watchdog.sh >/dev/null || (cd ~/polymarket-bot && nohup bash watchdog.sh >> watchdog.log 2>&1 &)`. The watchdog revives the bot within ~30s if it is ever down, so do this BEFORE judging health.',
+  '0a. LOCK: `cd ~/polymarket-bot && [ -f .autopilot_lock ] && echo "age=$(( $(date +%s) - $(stat -f %m .autopilot_lock) ))" || echo none`. If a lock exists and age < 900s -> the TRAINER loop (or another AUTOPILOT) is mid-cycle: set deferred=true, clear=false, and DO NOT touch the lock or anything else; return now. If absent or stale (>=900s), acquire it: `echo "autopilot:$(date +%s)" > .autopilot_lock`.',
+  '0b. HOUSEKEEPING (recovers from any interrupted prior cycle): `cd ~/polymarket-bot && rm -f .autopilot_pause && git checkout -- . 2>/dev/null`. This discards any half-written edit left on disk, so the working tree again equals HEAD (known-good code). Then ensure a supervisor is alive: `pgrep -f watchdog.sh >/dev/null || (cd ~/polymarket-bot && nohup bash watchdog.sh >> watchdog.log 2>&1 &)`. The watchdog revives the bot within ~30s if it is ever down, so do this BEFORE judging health. If you set clear=false for any reason OTHER than deferred (after acquiring the lock), you MUST `rm -f .autopilot_lock` before returning.',
   '1. Daemon health: `curl -s --max-time 6 http://127.0.0.1:8765/api/health`. Require ok:true AND audit=="balanced" AND age_seconds < 180. If the bot is down, wait 35s (give the watchdog a chance) and re-check once. Else clear=false, health_ok=false.',
   '2. Baseline tests at HEAD: run `cd ~/polymarket-bot && python3 bot.py test 2>&1 | tail -1` and `python3 tests.py 2>&1 | tail -1`. Both must report all passed. If not -> clear=false, tests_green=false, emergency=true (the live code is broken — say so loudly in reason).',
   '3. Read ~/polymarket-bot/autopilot_state.json if present: {last_ship_commit, settles_at_last_ship, pending_unproven, cycle}. Count current settles = length of the "settled" array in ~/polymarket-bot/paper_account.json. new_settles_since_ship = current - settles_at_last_ship (0 if no state file).',
@@ -187,6 +189,7 @@ const shipPrompt = (chosen) => R([
   '6. ALWAYS, whether shipped or rolled back, once the bot is confirmed healthy: `cd ~/polymarket-bot && rm -f .autopilot_pause` to re-arm the watchdog. (If you somehow cannot get a healthy bot, leave the flag — it auto-expires in 5 min and the watchdog will then force a clean restart from HEAD.)',
   '7. If shipped (good): write ~/polymarket-bot/autopilot_state.json = {"last_ship_commit":"<hash>","last_ship_ts":"<output of: date -u +%FT%TZ>","settles_at_last_ship":<current settled-array length>,"pending_unproven":true,"cycle":<prev cycle + 1>}.',
   '8. Append a dated entry to ~/polymarket-bot/QUANT_LOG.md (what shipped, the evidence, the test tally, and the rollback commit HEAD~1), then commit ONLY that file so the tree stays clean: `cd ~/polymarket-bot && git add QUANT_LOG.md && git commit -q -m "AUTOPILOT log: cycle record"`. Then best-effort mirror BOTH the code commit and this log to GitHub (ignore any push error): `git push origin master 2>&1 | tail -1 || true`.',
+  '9. RELEASE THE LOCK if it is ours: `cd ~/polymarket-bot && grep -q "^autopilot:" .autopilot_lock 2>/dev/null && rm -f .autopilot_lock || true`.',
   'Return shipped=true (or shipped=false+rolled_back=true), commit, health_after, equity_before, equity_after. The change shipped is: ' + JSON.stringify(chosen),
 ].join('\n'))
 
@@ -196,13 +199,18 @@ const discardPrompt = (note) => R([
   '2. Clear any leftover edit fence and confirm a clean tree: `cd ~/polymarket-bot && rm -f .autopilot_pause && git checkout -- . 2>/dev/null`; verify `git status --short` is empty.',
   '3. The daemon was NOT restarted this cycle, so it still runs the prior known-good code. Ensure the watchdog is alive (`pgrep -f watchdog.sh >/dev/null || (cd ~/polymarket-bot && nohup bash watchdog.sh >> watchdog.log 2>&1 &)`) and verify health on :8765 is ok:true / balanced.',
   '4. Append ONE dated line to ~/polymarket-bot/QUANT_LOG.md: "AUTOPILOT: shipped nothing — ' + note.replace(/"/g, "'") + '", then commit ONLY that file so the tree stays clean for the next cycle: `cd ~/polymarket-bot && git add QUANT_LOG.md && git commit -q -m "AUTOPILOT log: shipped nothing"`. Then best-effort mirror to GitHub (ignore any push error): `git push origin master 2>&1 | tail -1 || true`.',
+  '5. RELEASE THE LOCK if it is ours: `cd ~/polymarket-bot && grep -q "^autopilot:" .autopilot_lock 2>/dev/null && rm -f .autopilot_lock || true`.',
   'Return {clean, reason, head_subject}.',
 ].join('\n'))
 
 // ============================================================== CONTROL FLOW
 phase('Gate')
 const gate = await agent(gatePrompt, { schema: GATE_SCHEMA, label: 'gate', phase: 'Gate', agentType: 'Explore' })
-if (!gate || !gate.clear) {
+if (!gate || gate.deferred) {
+  log('GATE -> deferred (TRAINER or another loop holds the lock): ' + (gate ? gate.reason : 'gate agent failed'))
+  return { outcome: 'deferred', reason: gate ? gate.reason : 'gate agent failed' }
+}
+if (!gate.clear) {
   const why = gate ? gate.reason : 'gate agent failed to report'
   log('GATE -> ship nothing: ' + why + (gate && gate.emergency ? '  *** EMERGENCY: baseline broken ***' : ''))
   await agent(discardPrompt('gate: ' + why), { schema: DISCARD_SCHEMA, label: 'log-nothing', phase: 'Gate' })
