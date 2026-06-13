@@ -44,4 +44,5 @@ data/
 old_bot_backup.py
 ^c
 autopilot_state.json
-autopilot_workflow.js
+.autopilot_pause
+watchdog.launchd.log

@@ -8,6 +8,16 @@ cd "$(dirname "$0")"
 fails=0; beat=0
 while true; do
   if ! pgrep -f "bot.py paper" >/dev/null; then
+    # AUTOPILOT mid-change: don't revive the bot onto half-tested on-disk code.
+    # Flag auto-expires after 300s so a crashed cycle can never disable the net.
+    if [ -f .autopilot_pause ]; then
+      page=$(( $(date +%s) - $(stat -f %m .autopilot_pause 2>/dev/null || echo 0) ))
+      if [ "$page" -lt 300 ]; then
+        echo "$(date -u +%FT%TZ) watchdog: bot down, AUTOPILOT pause active (${page}s) — waiting" >> watchdog.log
+        sleep 15; continue
+      fi
+      echo "$(date -u +%FT%TZ) watchdog: pause flag stale (${page}s) — overriding, restarting" >> watchdog.log
+    fi
     echo "$(date -u +%FT%TZ) watchdog: process gone, restarting" >> watchdog.log
     nohup caffeinate -i python3 bot.py paper >> bot.log 2>&1 &
     fails=0; sleep 90
