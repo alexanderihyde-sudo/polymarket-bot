@@ -1911,7 +1911,7 @@ BRAIN_FACTORS = {"nsent": "headline sentiment",
                  "price": "higher entry price", "spread": "wide spread",
                  "imb": "buyer-stacked book", "mom": "recent momentum",
                  "ttr": "longer to resolution", "move": "big 1h move",
-                 "night": "overnight entry", "no_side": "betting No",
+                 "no_side": "betting No",
                  "news": "news strategy", "explore": "explorer trade",
                  "w_fcstrike": "forecast vs strike", "w_spread": "ensemble spread",
                  "w_agree": "ensemble agreement"}
@@ -1975,12 +1975,13 @@ def _global_x(x):
 
 
 def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
-    """One trade's entry context as a numeric feature vector."""
+    """One trade's entry context as a numeric feature vector.
+
+    `closed` (the market resolution timestamp) is accepted for call-site
+    compatibility but intentionally UNUSED: the settlement hour is unknown at
+    entry, so any feature derived from it leaks future data into training. The
+    former `night`/`imb_x_night` features that read it have been removed."""
     ctx = ctx or {}
-    try:
-        hour = int((closed or now_utc().isoformat())[11:13])
-    except (ValueError, IndexError):
-        hour = 12
     imb = ctx.get("imbalance")
     return {
         "bias": 1.0,
@@ -1990,7 +1991,6 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         "mom": max(-1.0, min(1.0, (ctx.get("momentum_6h") or 0.0) * 25)),
         "ttr": min((ctx.get("hours_to_end") or 48) / 96.0, 1.5),
         "move": min(abs(ctx.get("move_1h") or 0.0) * 5, 1.5),
-        "night": 1.0 if hour < 6 else 0.0,
         "no_side": 1.0 if (side or "").lower().startswith("no") else 0.0,
         "news": 1.0 if strategy == "news" else 0.0,
         "explore": 1.0 if strategy == "explore" else 0.0,
@@ -2123,12 +2123,10 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         "cl_social": 1.0 if cl == "social-posts" else 0.0,
     })(cluster_of(name)) | (lambda b: {
         # interactions: the continuous version of the miner's pair patterns
-        "imb_x_night": b["imb"] * b["night"],
         "spread_x_ttr": b["spread"] * b["ttr"],
         "price_x_move": b["price"] * b["move"],
         "imb_x_move": b["imb"] * b["move"],
     })({"imb": ((ctx.get("imbalance") if ctx.get("imbalance") is not None else 0.5) - 0.5) * 2,
-        "night": 1.0 if hour < 6 else 0.0,
         "spread": min((ctx.get("spread") or 0.0) * 50, 2.0),
         "ttr": min((ctx.get("hours_to_end") or 48) / 96.0, 1.5),
         "price": (price or 0.5) - 0.5,
@@ -7323,9 +7321,14 @@ def self_test():
     ok("cat: GLOBAL cv_skill byte-identical on fixed MIXED data (0.6729)",
        (bt_mix.get("oos") or {}).get("cv_skill") == 0.6729)
     # (1b) the GLOBAL weights are unchanged on the same mixed data (golden bias).
+    #      Goldens regenerated 2026-06-13 when the leaky `night`/`imb_x_night`
+    #      features (derived from the resolution-time `closed` field — unknown at
+    #      entry) were removed from _brain_x; this is a deliberate, OOS-verified
+    #      feature-space change (challenger cv_skill >= incumbent), so the frozen
+    #      logistic weights legitimately shift. cv_skill (1a) is unaffected.
     ok("cat: GLOBAL weights unchanged on fixed MIXED data",
-       (bt_mix.get("w") or {}).get("bias") == 1.5314
-       and (bt_mix.get("w") or {}).get("imb") == 1.5094)
+       (bt_mix.get("w") or {}).get("bias") == 1.5635
+       and (bt_mix.get("w") or {}).get("imb") == 1.5299)
     # (1c) brain_adjust(category=None) — the common path — is byte-identical to
     #      the golden pre-category value on the same mixed-trained brain.
     BRAIN.clear(); BRAIN.update(bt_mix)
@@ -7333,7 +7336,7 @@ def self_test():
                               {"imbalance": 0.9, "spread": 0.01,
                                "hours_to_end": 12}, "Yes")
     ok("cat: brain_adjust(category=None) byte-identical on MIXED data",
-       a_none_mix == 1.0693144597232576)
+       a_none_mix == 1.0720100983280245)
     # (1d) and identical to passing a category whose specialist has NOT earned
     #      divergence (oos_skill None at n=20/category) — additive+gated no-op.
     a_cat_inert = brain_adjust("news", 0.6,
