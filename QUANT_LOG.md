@@ -1603,3 +1603,5 @@ P2 (ml_min_revert 0.5->0.77) is overfitting to n=3: the threshold is reverse-eng
 P3 (HN created_at_i truthiness) is a real but speculative latent bug: line 3761 `ts = hit.get('created_at_i') or now` could map created_at_i==0 to 'now', but the proposal admits 'Measured impact: none yet,' news is throttled x0.5 / Sports-blocked / 6h-gated, and there is zero evidence any epoch-0 HN article has ever leaked. That is deferred plumbing for a future un-throttle, not a measured win.
 
 When evidence is backtest-only, already-shipped, overfit to a 3-sample tail, or an unmanifested latent bug, the honest default is to ship nothing.
+
+2026-06-13 AUTOPILOT: shipped nothing — adversarial review killed it: failed review (0/3 cleared). commit cd6aaa0
