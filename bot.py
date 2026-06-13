@@ -1948,10 +1948,21 @@ WEATHER_X_KEYS = ("w_fcstrike", "w_spread", "w_agree")
 # they are a pure no-op.
 MACRO_X_KEYS = ("m_ratedev", "m_cpisurp", "m_yieldsig")
 
+# Per-category SOCIAL feature keys — same partial-pooling contract: they default
+# EXACTLY 0.0 on the common path and are STRIPPED from the global model's view
+# (_global_x), so they survive ONLY in the social specialist and the
+# global/common path is byte-identical. They are derived purely from the
+# point-in-time HEADLINES buffer (news_rss + HackerNews connectors). DISTINCT
+# from the GLOBAL `newsbk`/`nsent` keys, which remain in the global feature
+# space exactly as before. Absent an OOS-earned social specialist these are a
+# pure no-op.
+SOCIAL_X_KEYS = ("s_newsstrong", "s_sentmag", "s_sentalign")
+
 # All per-category keys the global model must never see. The global logistic,
 # zoo (GBM/XGB/forest) and MLP train and predict on exactly the dimensions they
 # did before any category feature existed (byte-identical common path).
-_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS + WEATHER_X_KEYS + MACRO_X_KEYS
+_CAT_X_KEYS = (SPORTS_X_KEYS + CRYPTO_X_KEYS + WEATHER_X_KEYS + MACRO_X_KEYS
+               + SOCIAL_X_KEYS)
 
 
 def _global_x(x):
@@ -2086,6 +2097,25 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         # -0.5 flat, 0.0 normal, 0.5 steep growth. Already a discrete regime
         # code; passed through, clipped to its declared [-1.0, 0.5] band.
         "m_yieldsig": max(-1.0, min(0.5, ctx.get("macro_yield_signal") or 0.0)),
+        # PER-CATEGORY SOCIAL features. ALL DEFAULT EXACTLY NEUTRAL (0.0) when the
+        # social context is absent — i.e. every non-social market and every social
+        # market with no fresh coverage — so the global/common path is unchanged
+        # and the golden regression fixtures are byte-identical. These fire only
+        # for social markets carrying social_* context, and only the OOS-gated
+        # social specialist ever weights them. All point-in-time (see
+        # social_features): fresh, timestamp-filtered HEADLINES (news_rss +
+        # HackerNews) read AS OF NOW — never a future headline or market read.
+        # DISTINCT from the GLOBAL newsbk/nsent keys, which are unchanged.
+        # s_newsstrong: 1.0 when fresh coverage is CORROBORATED (>=2 fresh
+        # headlines or one strong subject match); 0.0 otherwise / when absent.
+        "s_newsstrong": 1.0 if ctx.get("social_news_strong") else 0.0,
+        # s_sentmag: magnitude of fresh-headline sentiment [0,1] — how loud the
+        # news is, direction-agnostic; 0.0 when no fresh coverage.
+        "s_sentmag": max(0.0, min(1.0, ctx.get("social_sent_mag") or 0.0)),
+        # s_sentalign: signed sentiment aligned to the side being bet, [-1,1];
+        # 0.0 (neutral) when no fresh coverage. Positive => the headline mood
+        # agrees with backing this outcome.
+        "s_sentalign": max(-1.0, min(1.0, ctx.get("social_sent_align") or 0.0)),
     } | (lambda cl: {
         "cl_weather": 1.0 if cl == "weather" else 0.0,
         "cl_sports": 1.0 if cl == "sports-game" else 0.0,
@@ -3637,6 +3667,74 @@ def headline_sentiment(question, window=5400):
     return max(-1.0, min(1.0, score / (hits * 2.0)))
 
 
+def _fresh_headline_hits(question, window=5400, min_overlap=2):
+    """Count fresh, subject-matching headlines in the point-in-time HEADLINES
+    buffer. POINT-IN-TIME: each headline carries the REAL publication timestamp
+    (RSS pubDate via _rss_items, HackerNews created_at_i), never the fetch time,
+    and only items newer than `window` seconds before NOW are considered — so a
+    backtest replaying this market at an earlier moment can never see a story
+    that had not yet published. No future market data is consulted. Returns 0
+    when the question has too few distinguishing tokens (the common path)."""
+    q = _q_tokens(question)
+    if len(q) < 2:
+        return 0
+    cutoff = time.time() - window
+    return sum(1 for ts, title in HEADLINES
+               if ts >= cutoff and len(q & _q_tokens(title)) >= min_overlap)
+
+
+def social_features(question, side, window=5400):
+    """Point-in-time SOCIAL feature read for one market, attached to the entry
+    context of SOCIAL markets only (pop-culture / tech / science / twitter /
+    truths / mentions). ALL fields default neutral (None) so a non-social market
+    — or a social market with no fresh coverage — leaves _brain_x's social
+    features at EXACTLY 0.0 and the global/common path byte-identical.
+
+    Reads ONLY the shared HEADLINES buffer, which the news_rss (Google News +
+    BBC) and HackerNews connectors fill keyless, governed and fail-silent. Every
+    headline is timestamp-filtered to a strict freshness window BEFORE the
+    decision moment (RSS pubDate / HN created_at_i — never fetch time), so the
+    read is purely point-in-time: no future headline and no future market data
+    can enter. A dead feed simply yields fewer fresh hits, never an exception.
+
+      news_backed_strong: 1.0 when the subject has CORROBORATED fresh coverage —
+                          either >=2 distinct fresh headlines match it, or one
+                          matches strongly (>=3 overlapping subject tokens).
+                          Stronger than the global `newsbk` single-hit flag;
+                          isolates drift-worthy news bursts from one-off mentions.
+                          None when there is no qualifying fresh coverage.
+      sentiment_magnitude: |headline sentiment| over fresh matching headlines in
+                          [0,1] — HOW LOUD the news is, regardless of direction.
+                          None when no fresh headline covers the subject.
+      sentiment_alignment: signed sentiment aligned to the SIDE being bet —
+                          +mag when the lexicon mood agrees with backing this
+                          outcome (positive mood on a Yes, negative mood on a
+                          No), -mag when it cuts against it, in [-1,1]. None
+                          when no fresh headline covers the subject.
+
+    Governed/cached/fail-silent by construction: it does no network I/O itself
+    (the news_loop connector owns that), so it can neither stall nor crash the
+    daemon. Returns the all-None neutral dict on any error."""
+    out = {"social_news_strong": None, "social_sent_mag": None,
+           "social_sent_align": None}
+    try:
+        hits = _fresh_headline_hits(question, window, min_overlap=2)
+        strong_hits = _fresh_headline_hits(question, window, min_overlap=3)
+        if hits >= 2 or strong_hits >= 1:
+            out["social_news_strong"] = 1.0
+        elif hits >= 1:
+            out["social_news_strong"] = 0.0   # covered, but not corroborated
+        sent = headline_sentiment(question, window)
+        if sent is not None:
+            out["social_sent_mag"] = abs(sent)
+            # align to the side: betting "No" flips the mood's helpfulness.
+            sign = -1.0 if (side or "").lower().startswith("no") else 1.0
+            out["social_sent_align"] = max(-1.0, min(1.0, sign * sent))
+    except Exception:
+        pass
+    return out
+
+
 def news_loop():
     """Poll free headline feeds (Google News + BBC, no keys) every 2 min."""
     while True:
@@ -4791,6 +4889,8 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                     or bool(_MACRO_RATE_RX.search(q_full))
                     or bool(_MACRO_CPI_RX.search(q_full))
                     or bool(_MACRO_YIELD_RX.search(q_full)))
+        is_social = (cat_key(category) == "social"
+                     or cluster_of(q_full) == "social-posts")
         sports_probe = False
         if is_sport and use_kelly:
             # sports only trade through the probation probe (see
@@ -4858,6 +4958,16 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         mf = (macro_features(m, price) if is_macro
               else {"macro_rate_dev": None, "macro_cpi_surprise": None,
                     "macro_yield_signal": None})
+        # PER-CATEGORY SOCIAL feature read (point-in-time, fail-silent, keyless).
+        # Only for social markets; for everything else sof stays the all-None
+        # neutral that leaves _brain_x's social features at 0.0 and the global
+        # path unchanged. Reads ONLY the fresh, timestamp-filtered HEADLINES
+        # buffer (news_rss Google News/BBC + HackerNews) — no network I/O here,
+        # no future data: see social_features docstring. Side-aligned to the
+        # outcome we'd back so sentiment alignment is P(fav)-oriented.
+        sof = (social_features(q_full, outcome_name) if is_social
+               else {"social_news_strong": None, "social_sent_mag": None,
+                     "social_sent_align": None})
         exit_keys = {}
         if strategy == "explore":
             # NO stop: a $1 stake is its own insurance (max loss = cost), and
@@ -4965,6 +5075,13 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                         "macro_rate_dev": mf["macro_rate_dev"],
                         "macro_cpi_surprise": mf["macro_cpi_surprise"],
                         "macro_yield_signal": mf["macro_yield_signal"],
+                        # per-category SOCIAL features (point-in-time, keyless;
+                        # all None for non-social markets / no fresh coverage ->
+                        # _brain_x neutral 0.0 -> the social specialist learns
+                        # them, global path unchanged).
+                        "social_news_strong": sof["social_news_strong"],
+                        "social_sent_mag": sof["social_sent_mag"],
+                        "social_sent_align": sof["social_sent_align"],
                         "sports_probe": 1 if sports_probe else None},
             "name": m["question"],
             "legs": [{"market_id": str(m["id"]), "question": m["question"],
@@ -7037,6 +7154,128 @@ def self_test():
                for m in (bt_mc.get("specialists") or {}).values()
                for k in MACRO_X_KEYS))
 
+    # ---- SOCIAL PER-CATEGORY FEATURE REGRESSION + LEAKAGE GUARD --------------
+    # The weave adds social_* features (corroborated fresh-news flag, headline
+    # sentiment magnitude, and side-aligned sentiment) to _brain_x + a social-only
+    # entry-context hook fed by the keyless news_rss (Google News/BBC) + HackerNews
+    # connectors via the point-in-time HEADLINES buffer. HARD RULE: on the COMMON
+    # path (non-social market / no fresh coverage -> social ctx None) the model is
+    # IDENTICAL to before. We prove neutrality, the explicit-None==absent sentinel,
+    # signed/scaled/capped values, side-alignment, and point-in-time leakage safety.
+    sx_plain = _brain_x("news", 0.6, base_ctx, "Yes")
+    ok("social features default neutral (0.0) with no social ctx",
+       sx_plain.get("s_newsstrong") == 0.0 and sx_plain.get("s_sentmag") == 0.0
+       and sx_plain.get("s_sentalign") == 0.0)
+    # explicit None social fields read identically to their absence (common path)
+    sx_none = _brain_x("news", 0.6, dict(base_ctx, social_news_strong=None,
+                                         social_sent_mag=None,
+                                         social_sent_align=None), "Yes")
+    ok("social: explicit None == absent (common path byte-identical)",
+       sx_none == sx_plain)
+    # corroborated-news flag is binary 0/1; magnitude non-negative, saturates 1.0
+    sx_s = _brain_x("news", 0.6, dict(base_ctx, social_news_strong=1.0,
+                                      social_sent_mag=0.7), "Yes")
+    ok("social: news-strong is binary and magnitude saturates [0,1]",
+       sx_s["s_newsstrong"] == 1.0 and 0 < sx_s["s_sentmag"] <= 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, social_sent_mag=5.0),
+                    "Yes")["s_sentmag"] == 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, social_sent_mag=-5.0),
+                    "Yes")["s_sentmag"] == 0.0)
+    # side-aligned sentiment: signed, capped [-1,1]; passes through here (the
+    # side flip lives in social_features, tested below against the headline buffer)
+    ok("social: alignment signs and caps ([-1,1])",
+       _brain_x("news", 0.6, dict(base_ctx, social_sent_align=0.5),
+                "Yes")["s_sentalign"] == 0.5
+       and _brain_x("news", 0.6, dict(base_ctx, social_sent_align=5.0),
+                    "Yes")["s_sentalign"] == 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, social_sent_align=-5.0),
+                    "Yes")["s_sentalign"] == -1.0)
+    # brain_adjust byte-identical with social ctx absent vs explicit None
+    BRAIN.update(bt)
+    sa_absent = brain_adjust("news", 0.6, base_ctx, "Yes")
+    sa_none = brain_adjust("news", 0.6, dict(base_ctx, social_news_strong=None,
+                                             social_sent_mag=None,
+                                             social_sent_align=None), "Yes")
+    ok("social: brain_adjust identical when social ctx absent vs None",
+       sa_absent == sa_none)
+    BRAIN.update(saved_brain)
+    # social features stay weight ~0 when never present in training (inert)
+    ok("social: feature weights ~0 when signal never present",
+       abs((bt_a.get("w") or {}).get("s_newsstrong", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("s_sentmag", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("s_sentalign", 0.0)) < 1e-6)
+    # LEAKAGE / POINT-IN-TIME: social_features reads ONLY the HEADLINES buffer and
+    # filters strictly by timestamp. We drive it against a controlled buffer (no
+    # network) to prove: (a) a fresh, on-subject, positive burst lights the strong
+    # flag + positive Yes-alignment; (b) a STALE headline (older than the window)
+    # is invisible — the exact future-leakage guard; (c) the No side flips
+    # alignment; (d) an off-subject market reads all-neutral.
+    _saved_headlines = list(HEADLINES)
+    try:
+        now_ts = time.time()
+        HEADLINES[:] = [
+            (now_ts - 100, "taylor swift announces record-breaking world tour"),
+            (now_ts - 200, "taylor swift tour breaks ticket sales record"),
+        ]
+        _sf = social_features("Will Taylor Swift announce a new tour this week?",
+                              "Yes")
+        ok("social: fresh corroborated positive burst -> strong flag + +align (PIT)",
+           _sf["social_news_strong"] == 1.0 and _sf["social_sent_mag"] > 0
+           and _sf["social_sent_align"] > 0)
+        # the SAME two headlines, but published OUTSIDE the freshness window, are
+        # invisible — a backtest at an earlier moment cannot see future news.
+        HEADLINES[:] = [
+            (now_ts - 99999, "taylor swift announces record-breaking world tour"),
+            (now_ts - 99998, "taylor swift tour breaks ticket sales record"),
+        ]
+        _sf_stale = social_features(
+            "Will Taylor Swift announce a new tour this week?", "Yes")
+        ok("social: stale (out-of-window) headlines are invisible (no future leak)",
+           all(_sf_stale[k] is None for k in
+               ("social_news_strong", "social_sent_mag", "social_sent_align")))
+        # side flip: a positive mood CUTS AGAINST a No bet -> negative alignment.
+        HEADLINES[:] = [
+            (now_ts - 100, "taylor swift announces record-breaking world tour"),
+            (now_ts - 200, "taylor swift tour breaks ticket sales record"),
+        ]
+        _sf_no = social_features(
+            "Will Taylor Swift announce a new tour this week?", "No")
+        ok("social: No side flips sentiment alignment (positive mood -> -align)",
+           _sf_no["social_sent_align"] < 0)
+        # off-subject market: no fresh headline matches -> all-neutral (fail-silent)
+        _sf_off = social_features("Will it rain in Tokyo tomorrow?", "Yes")
+        ok("social: fail-silent neutral on an off-subject market (no coverage)",
+           all(_sf_off[k] is None for k in
+               ("social_news_strong", "social_sent_mag", "social_sent_align")))
+    finally:
+        HEADLINES[:] = _saved_headlines
+    # END-TO-END WIRING: a social category whose outcome is driven by the
+    # side-aligned sentiment feature forms a specialist that ACTUALLY WEIGHTS the
+    # social keys, while the GLOBAL model never sees them (its w/specialists are
+    # strictly the pre-social feature space). Proves the feature is learned by the
+    # right learner and isolated from the global one.
+    social_fix = {"settled": [
+        {"strategy": "news", "pnl": (1.0 if i % 2 == 0 else -1.0),
+         "entry_price": 0.5, "side": "Yes", "category": "Pop Culture",
+         "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+         "name": "Will the new album top the charts #%d" % i,
+         "context": {"imbalance": 0.5, "spread": 0.01, "hours_to_end": 12,
+                     # headline mood aligns with the outcome on winners, against
+                     # it on losers; corroborated coverage on the same parity:
+                     "social_news_strong": 1.0,
+                     "social_sent_mag": 0.6,
+                     "social_sent_align": (0.6 if i % 2 == 0 else -0.6)}}
+        for i in range(60)]}
+    bt_so = brain_train(social_fix)
+    so = (bt_so.get("cat_specialists") or {}).get("social") or {}
+    ok("social: specialist learns the sentiment-alignment key (s_sentalign!=0)",
+       abs((so.get("w") or {}).get("s_sentalign", 0.0)) > 1e-3)
+    ok("social: GLOBAL model carries NO social keys (feature space isolated)",
+       all(k not in (bt_so.get("w") or {}) for k in SOCIAL_X_KEYS)
+       and all(k not in (m or {})
+               for m in (bt_so.get("specialists") or {}).values()
+               for k in SOCIAL_X_KEYS))
+
     # ===== PER-CATEGORY BRAIN SPECIALIST LAYER (partial pooling, OOS-gated) ===
     # The hard rule, tightened: the GLOBAL model must be byte-identical AFTER
     # adding the category layer, proven on a FIXED MIXED-CATEGORY dataset (not
@@ -7614,6 +7853,15 @@ def attribution(account):
                              else ("forecast>strike" if ctx(t)["wx_fc_strike"] > 0.1
                                    else "forecast<strike" if ctx(t)["wx_fc_strike"] < -0.1
                                    else "at-strike")),
+        # SOCIAL specialist attribution: how trades fared by the side-aligned
+        # headline sentiment (news_rss + HackerNews). None for every non-social
+        # trade (no social_sent_align context) so the bucket stays scoped to the
+        # social category.
+        "by_social": bucket(rows, lambda t: None
+                            if ctx(t).get("social_sent_align") is None
+                            else ("aligned+" if ctx(t)["social_sent_align"] > 0.1
+                                  else "against-" if ctx(t)["social_sent_align"] < -0.1
+                                  else "neutral")),
         "by_sentiment": bucket(rows, lambda t: None if ctx(t).get("news_sent") is None
                                else ("pos" if ctx(t)["news_sent"] > 0
                                      else "neg" if ctx(t)["news_sent"] < 0 else "neutral")),
