@@ -1257,3 +1257,55 @@ remains the prior and fallback.
 now surface on the Models tab under model 13.
 
 Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
+
+## 2026-06-13 ~07:12 UTC — FEATURE: per-category SPORTS API features (commit c2d18db)
+
+The "sports" category specialist now gets its OWN relevant API feature set,
+fed point-in-time and learned only by the OOS-gated sports specialist — the
+global model is provably untouched.
+
+**Connector (fail-silent, governed, cached, key-gated)** — `sports_features()`:
+- `game_state_risk`: ESPN scoreboard state (pre/post) via the existing
+  `_espn_board()` (governed `get_json`, 20s timeout), cached 5 min. Live
+  in-game is BANNED per rules; post-game sets an abstain flag (`gpost`). A
+  raising/empty ESPN yields `[]` — never stalls or crashes the scan.
+- `elo_fair_value`: Polymarket-trained Elo read point-in-time from
+  `SPORTSEDGE["ratings"]` (trained ONLY on finals already seen — immutable per
+  decision, never the current game's result). Neutral when a team is unrated.
+- `sportsbook_consensus` + `spread_vs_consensus_div`: median de-vigged moneyline
+  P(fav) from The Odds API, ridden off the existing xmkt snapshot and gated on
+  the `oddsapi` source being present (key from `os.environ["ODDS_API_KEY"]`;
+  absent -> source skipped silently -> feature neutral). fav-aligned.
+
+**Brain wiring** — `_brain_x` gains `sb_cons, elo_fv, sb_div, gpost`, ALL
+defaulting EXACTLY 0.0 on the common path. To keep the GLOBAL model byte-
+identical (the MLP's weight init and the trees' splits depend on the exact
+input-dimension set), these keys are STRIPPED via a new `_global_x()` from the
+global logistic, the zoo/MLP, the per-strategy specialists, and online
+learning. They survive ONLY in the per-CATEGORY sports specialist, the one
+learner allowed to weight them. Attached to sports-market entry context only;
+every non-sports market leaves them absent. `by_sports` attribution bucket added.
+
+**Leakage / era hygiene**: every read point-in-time (game-state now, Elo from
+prior finals, consensus from the concurrent snapshot — never a final score);
+`dead_cohort()` already threaded through the per-category learner (training
+rows AND credibility), so the dead 06-12 kelly-lane sports cohort cannot
+pollute the new specialist.
+
+**Gates (all passed)**
+- bot.py test 176/176 (+12 new sports tests), tests.py 80/0, chartml.py ALL
+  PASS, ml.py ALL PASS, crossmarket.py ALL PASS.
+- No-regression proof on the FIXED MIXED-category dataset: global `cv_skill`
+  (0.6729) and `brain_adjust(category=None)` (1.0693144597232576) are BYTE-
+  IDENTICAL before/after. Feature-space isolation proven: the global model and
+  per-strategy specialists carry NO sports keys; the sports specialist DOES
+  learn `sb_cons` end-to-end on a consensus-driven fixture.
+- Sports features default neutral with no ctx; explicit-None == absent;
+  fail-silent neutral with no game-state/rating/key; consensus requires the
+  Odds-API source (key-gated); edges signed and capped [-1,1].
+- Global cv_skill on the live account: None before -> None after (7 settled
+  rows, below the 10-row OOS threshold either way — no regression). The sports
+  layer is a no-op live until the category accumulates 20+ labels and beats the
+  base rate out-of-sample, at which point it engages automatically.
+
+Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
