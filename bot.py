@@ -2161,6 +2161,33 @@ def _settle_traits(t):
         return set()
 
 
+def _top_pat_feats(trades, k=5):
+    """The miner's top-k strongest combos derived from a SPECIFIC trade list.
+    Used two ways: GLOBALLY (the whole settled set) for the deployed brain, and
+    — critically — FOLD-LOCALLY inside cross-validation, where `trades` is only
+    a fold's TRAINING trades (data[:cut]). Mining per-fold from train data alone
+    keeps the pat* feature DEFINITIONS from ever seeing a holdout outcome.
+    dead_cohort filtering and the 14-day recency window are preserved untouched:
+    mine_patterns owns both and receives the trade list verbatim."""
+    mined = mine_patterns({"settled": trades}, min_n=8)
+    return [m["pattern"] for m in
+            sorted(mined, key=lambda m: -abs(m["pnl"]))[:k]]
+
+
+def _strip_pats(x):
+    """A copy of feature vector x without its pat0..patN columns — the base onto
+    which a fold's own mined patterns are re-applied during CV."""
+    return {f: v for f, v in x.items() if not f.startswith("pat")}
+
+
+def _add_pat_feats(x, traits, pat_feats):
+    """Bake the binary pat0..patN columns onto x for the given pattern set
+    (mutates and returns x)."""
+    for i, p in enumerate(pat_feats):
+        x[f"pat{i}"] = 1.0 if set(p.split("&")) <= traits else 0.0
+    return x
+
+
 def brain_train(account):
     """Brain 3.0 — four multipliers stacked:
     (1) AUTO FEATURE ENGINEERING: the pattern miner's strongest discovered
@@ -2171,9 +2198,12 @@ def brain_train(account):
     (3) hyperparameter search: L2 strength chosen by CV every retrain;
     (4) temporal prior: each fit is pulled toward the previous brain, so
         knowledge accumulates instead of resetting (online learning)."""
-    mined = mine_patterns(account, min_n=8)
-    pat_feats = [m["pattern"] for m in
-                 sorted(mined, key=lambda m: -abs(m["pnl"]))[:5]]
+    # GLOBAL pattern features for the DEPLOYED brain: the final models are fit
+    # on ALL rows, where there is no holdout to leak into, so mining the top-5
+    # combos from the whole settled set is correct HERE. The cross-validation
+    # below re-mines them FOLD-LOCALLY (train trades only) so the skill estimate
+    # is not inflated by in-sample feature selection.
+    pat_feats = _top_pat_feats(account["settled"])
     rows = []
     for t in account["settled"]:
         if t["strategy"] == "arbitrage" or dead_cohort(t):
@@ -2181,10 +2211,9 @@ def brain_train(account):
         x = _brain_x(t["strategy"], t.get("entry_price"), t.get("context"),
                      t.get("side"), t.get("closed"), t.get("name"))
         traits = _settle_traits(t)
-        for i, p in enumerate(pat_feats):
-            x[f"pat{i}"] = 1.0 if set(p.split("&")) <= traits else 0.0
+        _add_pat_feats(x, traits, pat_feats)   # GLOBAL pats for the final fit
         rows.append((x, 1.0 if t["pnl"] >= 0 else 0.0, t["strategy"],
-                     cat_key(t.get("category")), t))
+                     cat_key(t.get("category")), t, traits))
     n_eff = effective_n([t for t in account["settled"]
                          if t["strategy"] != "arbitrage" and not dead_cohort(t)])
     out = {"n": len(rows), "n_eff": n_eff, "w": {}, "specialists": {},
@@ -2212,19 +2241,48 @@ def brain_train(account):
         # the Page-Hinkley detector fired at settle #di: the world the old
         # data describes is gone. Once the new regime has enough labels to
         # stand alone, train on it exclusively (river's window-drop move).
-        data = [(_global_x(x), y) for x, y, *_ in rows[di:]]
+        src = rows[di:]
     else:
-        data = [(_global_x(x), y) for x, y, *_ in rows]
+        src = rows
+    data = [(_global_x(x), y) for x, y, *_ in src]
+    # Aligned 1:1 with `data`: each row's raw trade + trait set, threaded into
+    # CV so every fold re-mines its OWN pat* features from training trades only
+    # (data[:cut]). `data` itself keeps the GLOBAL pat columns baked on, which
+    # is correct for the FINAL models fit on all rows (no holdout to leak into);
+    # CV strips those off (cv_bases) and re-derives them per fold below.
+    cv_meta = [(t, tr) for *_, t, tr in src]            # (trade, traits)
+    cv_bases = [_strip_pats(gx) for gx, _y in data]     # pat-free vectors
+
+    # Fold geometry computed ONCE. The fold-local pattern set is mined HERE from
+    # data[:cut] only, so the pat* feature DEFINITIONS never see a holdout label
+    # and every model in the race shares the same honest folds. Before this fix,
+    # the top-5 patterns were mined globally from the whole settled set — i.e.
+    # from trades that later land in the holdout fold — which is in-sample
+    # feature selection bleeding into the OOS estimate and inflated cv_skill.
+    _k = 5
+    cv_folds = []
+    for _f in range(2, _k):                   # expanding-window folds
+        _cut = max(10, int(len(data) * _f / _k))
+        _hi = min(len(data), _cut + max(1, len(data) // _k))
+        if _hi - _cut < 5:
+            continue
+        cv_folds.append((_cut, _hi,
+                         _top_pat_feats([t for t, _tr in cv_meta[:_cut]])))
 
     def cv_generic(fit_fn, pred_fn):
-        skills, k = [], 5
-        for f in range(2, k):
-            cut = max(10, int(len(data) * f / k))
-            hold = data[cut:cut + max(1, len(data) // k)]
-            if len(hold) < 5:
-                continue
-            m = fit_fn(data[:cut])
-            base = max(0.02, min(0.98, sum(y for _, y in data[:cut]) / cut))
+        """Expanding-window CV with FOLD-LOCAL pattern mining (see cv_folds):
+        the pat* columns are re-derived from each fold's TRAIN trades only, so
+        the skill estimate is honest. fit_fn trains on the fold-train rows;
+        pred_fn scores the held-out fold; skill is logloss vs. the in-fold base
+        rate, averaged across folds."""
+        skills = []
+        for cut, hi, pats in cv_folds:
+            tr = [(_add_pat_feats(dict(cv_bases[i]), cv_meta[i][1], pats),
+                   data[i][1]) for i in range(cut)]
+            hold = [(_add_pat_feats(dict(cv_bases[i]), cv_meta[i][1], pats),
+                     data[i][1]) for i in range(cut, hi)]
+            m = fit_fn(tr)
+            base = max(0.02, min(0.98, sum(y for _, y in tr) / len(tr)))
             ll_m = ll_b = 0.0
             for x, y in hold:
                 p = max(0.02, min(0.98, pred_fn(m, x)))
@@ -2233,22 +2291,8 @@ def brain_train(account):
             skills.append((ll_b - ll_m) / len(hold))
         return sum(skills) / len(skills) if skills else None
 
-    def cv_skill(l2):
-        skills, k = [], 5
-        for f in range(2, k):                 # expanding-window folds
-            cut = max(10, int(len(data) * f / k))
-            hold = data[cut:cut + max(1, len(data) // k)]
-            if len(hold) < 5:
-                continue
-            w = _fit_logistic(data[:cut], l2=l2)
-            base = max(0.02, min(0.98, sum(y for _, y in data[:cut]) / cut))
-            ll_m = ll_b = 0.0
-            for x, y in hold:
-                p = max(0.02, min(0.98, _predict(w, x)))
-                ll_m += -(y * math.log(p) + (1 - y) * math.log(1 - p))
-                ll_b += -(y * math.log(base) + (1 - y) * math.log(1 - base))
-            skills.append((ll_b - ll_m) / len(hold))
-        return sum(skills) / len(skills) if skills else None
+    def cv_skill(l2):                          # logistic CV (same honest folds)
+        return cv_generic(lambda tr: _fit_logistic(tr, l2=l2), _predict)
 
     best_l2, best_skill = 0.05, None
     for l2 in (0.02, 0.05, 0.15):
@@ -2383,7 +2427,7 @@ def brain_train(account):
         return sum(skills) / len(skills) if skills else None
 
     by_cat = {}
-    for x, y, st, ck, t in rows:
+    for x, y, st, ck, t, _tr in rows:
         if ck:
             by_cat.setdefault(ck, []).append((x, y, t))
     for ck, crows in by_cat.items():
@@ -2428,9 +2472,7 @@ def brain_adjust(strategy, price, ctx, side=None, category=None):
         probe = {"strategy": strategy, "name": "", "category": None,
                  "side": side, "entry_price": price,
                  "closed": now_utc().isoformat(), "context": ctx, "pnl": 0}
-        traits = _settle_traits(probe)
-        for i, p in enumerate(pats):
-            x[f"pat{i}"] = 1.0 if set(p.split("&")) <= traits else 0.0
+        _add_pat_feats(x, _settle_traits(probe), pats)
     # the GLOBAL model sees the pre-sports feature space (byte-identical common
     # path); only the per-category sports specialist below sees the sports keys.
     xg = _global_x(x)
