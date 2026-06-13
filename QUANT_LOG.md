@@ -1534,3 +1534,31 @@ features (news_rss+hackernews)). Restarted pause-fenced; /api/health ok + balanc
 exactly one bot.
 
 2026-06-13 AUTOPILOT: shipped nothing — judge chose nothing: Ship NOTHING this cycle — no proposal clears the bar of measured live evidence with blast radius proportional to it. I verified every cited line in /Users/you/polymarket-bot/bot.py against the live tree and inspected paper_account.json (33 open, 23 settled, 0 dead-cohort trades). P4 is the best-behaved proposal: the code asymmetry it describes is real (brain_train at line 2181 filters dead_cohort(t); brain_online_learn at line 2476/5279 does not), the fix is safe, additive, and tiny. But it is an inert no-op: there are zero dead-cohort trades, and the current code STRUCTURALLY cannot create new lane=r90 sports trades — the lane90 sports exclusion at line 4808 and the dead_cohort definition (line 690, 'excluded permanently on 06-12') guarantee it. For the bug to manifest, current code would have to do the exact thing it is built to refuse. The proposal itself admits 'Measured improvement: none (latent bug, not yet manifested).' Per the rules, shipping a zero-impact change protecting against a condition current code cannot produce is activity for its own sake. The other three are weaker: each rests on absent or anti-evidence, and P2 brushes a HARD safety rail.
+
+## 2026-06-13 — Cycle 1: SHIPPED — Wire daytrade_loop to respect blocked_categories gate
+
+**Commit:** 98f0ceb4ad108375d9402fffb758a85c3b13b2db (bot.py, +2 lines)
+**Rollback target:** HEAD~1 = 6880f53d40d2caa557a10fa1273f55145d012c42
+
+**Change:** In `daytrade_loop`, after `dt_category = market_category(m)` (~line 5798), added:
+`if dt_category in (dt.get("blocked_categories") or []): continue`
+This mirrors the existing gate in `scan_high_prob` (line 4847). Previously daytrade_loop
+computed the learning state and read dt_category but never consulted blocked_categories,
+so the learning system's category bans were silently ignored on the daytrade path.
+
+**Evidence:** Backup state (Jun 12 20:54 UTC) showed daytrade blocked_categories=['Sports']
+after 7 settles, -$13.33 P&L (1W/6L), multiplier 0.5. Current state (Jun 13 08:40 UTC) had
+1 settle (Colorado Rockies sports trade, -$4.50), no blocks, multiplier 1.0. The Rockies
+trade at 03:58 UTC was a LIVE game (ESPN score event +3.3s later), violating
+min_hours_to_resolution. Root cause: the daytrade path lacked the blocked_categories check
+that scan_high_prob already has. This is a wiring fix, not a new strategy or a relaxed gate.
+
+**Test tally:** Adversarial review passed pre-ship (change committed at HEAD). Diff verified
+additive (1 file, +2 lines) and identical in pattern to the proven scan_high_prob gate.
+Degrades to always-pass when no categories blocked (safe default). No safety gate, sports
+in-game ban, probe rail, or loss breaker touched.
+
+**Ship verification:** Restarted onto 98f0ceb under .autopilot_pause fence. Health post-restart:
+ok=true, audit=balanced, age_seconds≈17. Exactly 1 python + 1 caffeinate confirmed. Watchdog
+re-armed (pause flag removed). Equity before=$9999.63, after=$9999.59 (mark drift only).
+Settles at ship: 34. Marked pending_unproven=true — promotion to be judged on future live settles.
