@@ -5588,6 +5588,10 @@ def scan_news(cfg, skip_ids, room, bankroll, blocked_categories=(), multiplier=1
         if section != "news":
             confirmed = False   # daytrade reuses this scanner but is a
             # pure fade desk — follow-mode belongs to the news book only
+        if section == "daytrade" and nb:
+            continue   # a news-BACKED move DRIFTS on the information; fading
+            # it is "how fades die" (news_backed docstring) — both Politics
+            # daytrade stop-outs (Trump, Iran) were exactly this
         p_rev = None
         if (confirmed and section == "news") or section == "daytrade":
             toks_pre = jlist(m.get("clobTokenIds"))
@@ -5778,6 +5782,10 @@ def daytrade_loop(cfg, account):
                     continue  # the game is LIVE — jump risk, the move model's
                     # mean-reversion assumption breaks down (parity with
                     # scan_news at line 5611)
+                if news_backed(m.get("question", "")):
+                    continue  # a news-BACKED move DRIFTS, it doesn't revert;
+                    # fading it is "how fades die" — parity with the slow path,
+                    # and exactly the Politics daytrade stop-outs we just took
                 # learned chart gate (model 16): trained on 5,675 recorded
                 # moves, OOS skill +0.075 on a 1,703-event chronological
                 # holdout — fade only what history says actually reverts
