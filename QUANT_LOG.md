@@ -1367,3 +1367,65 @@ per-category learner (training rows AND credibility).
   base rate out-of-sample, at which point it engages automatically.
 
 Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
+
+## 2026-06-13 — FEATURE: per-category WEATHER API features (Open-Meteo ensemble + weather.gov/NWS)
+
+Commit `bd74000`. Third per-category specialist feed (after sports, crypto), same
+OOS-gated partial-pooling contract: the global model is always the prior and is
+provably untouched on the common path.
+
+**Connectors** (free/keyless public endpoints, governed via `get_json` [20s
+timeout, fail-silent -> None], wrapped in `_cached`; the optional paid-tier
+`OPENMETEO_API_KEY` is read from `os.environ` and forwarded when present, absent
+-> keyless endpoint, source never gated off):
+- `_openmeteo_ensemble(lat, lon, date_str, kind)`: ~30-member GFS ensemble daily
+  2m-max/min (°C) per member from `ensemble-api.open-meteo.com/v1/ensemble`, 15min
+  cache. Keyed by the TARGET date; a non-target date -> `[]` (no future leak).
+- `_nws_point_forecast(lat, lon, date_str, kind)`: official weather.gov/NWS point
+  forecast, fail-silent mean fallback when the ensemble blips, 1h cache. Keyless
+  (NWS only needs the User-Agent `session` already sends).
+- `_wx_geocode(city)`: Open-Meteo keyless geocoder (city -> lat/lon), 24h cache.
+- `_wx_strike_c` / `_wx_strike_side`: parse the strike (-> °C, the forecast's
+  native unit) and the market direction from the question TEXT only (point-in-time).
+
+**Features** (`weather_features(m, price)`, weather markets only; all default None):
+- `forecast_vs_strike` (`w_fcstrike`): (ensemble_mean - strike)/(hist_err+0.5) in
+  °C, capped to spec range [-3, 3]. Mean from the ensemble, NWS fallback.
+- `forecast_spread` (`w_spread`): member stdev / 2.5, [0, 1.5] — forecast
+  uncertainty from ensemble disagreement (needs >=3 members).
+- `model_agreement` (`w_agree`): fraction of members on the market's side of the
+  strike, [0, 1]; None for range/exact markets (no single direction).
+
+**Brain wiring** — `_brain_x` gains `w_fcstrike, w_spread, w_agree`, ALL defaulting
+EXACTLY 0.0 on the common path. They are STRIPPED via `_global_x()` (now
+`_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS + WEATHER_X_KEYS`) from the global
+logistic, the zoo/MLP, the per-strategy specialists and online learning, surviving
+ONLY in the per-CATEGORY weather specialist — the one learner allowed to weight
+them. Attached to weather-market entry context only (detected via cat_key/cluster/
+`_wx_parse`); every non-weather market leaves them absent. `by_weather` attribution
+bucket added (forecast>strike / forecast<strike / at-strike).
+
+**Leakage / era hygiene**: every read point-in-time — the ensemble/NWS forecasts
+are model runs issued AS OF NOW (not future observations), the strike is parsed
+from question text, and the ensemble table is keyed by the target DAY's daily
+field (a non-target date yields []). Ensemble disagreement is historical forecast
+agreement, never outcome peeking. Temperature markets are independent of
+`dead_cohort` (sports-only), which is already threaded through the per-category
+learner (training rows AND credibility) unchanged.
+
+**Gates (all passed)**
+- bot.py test 200/200 (+13 new weather tests), tests.py 80/0, chartml.py ALL
+  PASS, ml.py ALL PASS. (crossmarket.py untouched — not run.)
+- No-regression proof on the FIXED MIXED-category dataset: global `cv_skill`
+  (0.6729), global weights (bias 1.5314, imb 1.5094), and
+  `brain_adjust(category=None)` (1.0693144597232576) BYTE-IDENTICAL before/after.
+  Feature-space isolation proven: the global model and per-strategy specialists
+  carry NO weather keys; the weather specialist DOES learn `w_fcstrike` end-to-end
+  on a planted fixture. Live `brain_adjust` byte-identical with weather ctx absent
+  vs explicit-None vs present-with-Weather-category (1.0039492824077103).
+- Global cv_skill on the live account: None before -> None after (12 brain rows,
+  below the OOS threshold either way — no regression). The weather layer is a
+  no-op live until the category accumulates 20+ labels and beats the base rate
+  out-of-sample, at which point it engages automatically.
+
+Restarted pause-fenced; /api/health ok + balanced, exactly one bot.
