@@ -1925,13 +1925,26 @@ BRAIN_FACTORS = {"nsent": "headline sentiment",
 # pure no-op and the global/common path is unchanged.
 SPORTS_X_KEYS = ("sb_cons", "elo_fv", "sb_div", "gpost")
 
+# Per-category CRYPTO feature keys — same partial-pooling contract as the sports
+# keys: they default EXACTLY 0.0 on the common path and are STRIPPED from the
+# global model's view (_global_x), so they survive ONLY in the crypto specialist
+# and the global/common path is byte-identical. Absent an OOS-earned crypto
+# specialist they are a pure no-op.
+CRYPTO_X_KEYS = ("c_spotdist", "c_rvol", "c_spread")
+
+# All per-category keys the global model must never see. The global logistic,
+# zoo (GBM/XGB/forest) and MLP train and predict on exactly the dimensions they
+# did before any category feature existed (byte-identical common path).
+_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS
+
 
 def _global_x(x):
-    """The global model's view of a feature vector: identical to the pre-sports
-    feature space. Strips the per-category sports keys so the global logistic,
-    GBM/XGB, forest and MLP train and predict on exactly the dimensions they did
-    before the sports features existed (byte-identical common path)."""
-    return {k: v for k, v in x.items() if k not in SPORTS_X_KEYS}
+    """The global model's view of a feature vector: identical to the
+    pre-category-feature space. Strips every per-category key so the global
+    logistic, GBM/XGB, forest and MLP train and predict on exactly the
+    dimensions they did before the category features existed (byte-identical
+    common path)."""
+    return {k: v for k, v in x.items() if k not in _CAT_X_KEYS}
 
 
 def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
@@ -1998,6 +2011,24 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         # gpost: post-game risk flag — joined ESPN game already final (abstain
         # territory); 0.0 pre-game / unknown (live never reaches the trade path).
         "gpost": 1.0 if ctx.get("sports_post") else 0.0,
+        # PER-CATEGORY CRYPTO features. ALL DEFAULT EXACTLY NEUTRAL (0.0) when the
+        # crypto context is absent — i.e. every non-crypto market and every crypto
+        # market we cannot map to a symbol/strike — so the global/common path is
+        # unchanged and the golden regression fixtures are byte-identical. These
+        # fire only for crypto markets carrying crypto_* context, and only the
+        # OOS-gated crypto specialist ever weights them. All point-in-time (see
+        # crypto_features): Coinbase/CoinGecko spot, Kraken closed-candle vol and
+        # live Kraken ticker spread — every read a snapshot AS OF NOW.
+        # c_spotdist: signed (spot - strike)/strike distance, capped [-1,1].
+        "c_spotdist": max(-1.0, min(1.0,
+                          (ctx.get("crypto_spot_dist") or 0.0) * 5.0)),
+        # c_rvol: hourly realized vol, scaled so a calm ~1%/h sits near 0 and a
+        # violent regime saturates toward 1.0 (24 closed candles, no forward data).
+        "c_rvol": max(0.0, min(1.0, (ctx.get("crypto_rvol_h") or 0.0) * 20.0)),
+        # c_spread: live bid/ask spread in bps, scaled so a tight ~5bps book sits
+        # near 0 and a thin/illiquid one saturates toward 1.0.
+        "c_spread": max(0.0, min(1.0, (ctx.get("crypto_spread_bps") or 0.0)
+                                 / 50.0)),
     } | (lambda cl: {
         "cl_weather": 1.0 if cl == "weather" else 0.0,
         "cl_sports": 1.0 if cl == "sports-game" else 0.0,
@@ -2921,13 +2952,19 @@ _KRAKEN_PAIRS = {"BTC": "XBTUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
 
 
 def _crypto_vol(sym):
-    """Hourly realized volatility from Kraken's free OHLC (no key)."""
+    """Hourly realized volatility from Kraken's free OHLC (no key).
+
+    POINT-IN-TIME: Kraken returns the in-progress (current) hourly candle as the
+    LAST row — its close/high/low keep moving and would leak forward data into a
+    decision made mid-hour. We drop that trailing candle (rows[:-1]) so vol is
+    computed from CLOSED candles only (close-to-close over candle[i-1]->[i])."""
     def fetch():
         k = get_json("https://api.kraken.com/0/public/OHLC",
                      params={"pair": _KRAKEN_PAIRS.get(sym, sym + "USD"),
                              "interval": 60}) or {}
         keys = [x for x in (k.get("result") or {}) if x != "last"]
-        rows = (k["result"][keys[0]] if keys else [])[-168:]
+        all_rows = (k["result"][keys[0]] if keys else [])
+        rows = all_rows[:-1][-168:]          # drop the in-progress candle
         closes = [fnum(r[4]) for r in rows if fnum(r[4]) > 0]
         if len(closes) < 24:
             return None
@@ -2936,6 +2973,101 @@ def _crypto_vol(sym):
         mu = sum(rets) / len(rets)
         return (sum((r - mu) ** 2 for r in rets) / len(rets)) ** 0.5
     return _cached(("cvol", sym), 900, fetch)
+
+
+# --------------------------------------------- per-category CRYPTO feature read
+# CoinGecko ID map for the keyless /simple/price fallback spot source. Used only
+# when Coinbase is unreachable, so the crypto feature read degrades gracefully
+# instead of going neutral the instant one exchange blips.
+_COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+                  "XRP": "ripple", "DOGE": "dogecoin"}
+
+
+def _coingecko_spot(sym):
+    """CoinGecko public spot (free, keyless) — the fallback source for spot
+    when Coinbase blips. Cached 60s, fail-silent (None on any error)."""
+    cid = _COINGECKO_IDS.get(sym)
+    if not cid:
+        return None
+    return _cached(("cgspot", sym), 60, lambda: fnum(
+        ((get_json("https://api.coingecko.com/api/v3/simple/price",
+                   params={"ids": cid, "vs_currencies": "usd"}) or {})
+         .get(cid, {}) or {}).get("usd")) or None)
+
+
+def _crypto_spot(sym):
+    """Point-in-time spot for `sym`: Coinbase first (US-friendly, 60s cache),
+    CoinGecko as a fail-silent fallback. No future data — a live quote AS OF
+    NOW. Returns None when both sources are unreachable (feature -> neutral)."""
+    return _spot(sym) or _coingecko_spot(sym)
+
+
+def _kraken_spread_bps(sym):
+    """Live bid/ask spread in basis points from Kraken's public Ticker (b, a
+    fields), AS OF the request time. Free, keyless, governed, cached 60s,
+    fail-silent (None on any error). No forward data: a snapshot of the current
+    top-of-book, never a future print."""
+    def fetch():
+        pair = _KRAKEN_PAIRS.get(sym, sym + "USD")
+        k = get_json("https://api.kraken.com/0/public/Ticker",
+                     params={"pair": pair}) or {}
+        res = k.get("result") or {}
+        keys = list(res)
+        if not keys:
+            return None
+        t = res[keys[0]] or {}
+        bid = fnum((t.get("b") or [None])[0])   # best bid price
+        ask = fnum((t.get("a") or [None])[0])   # best ask price
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return None
+        mid = (bid + ask) / 2.0
+        if mid <= 0:
+            return None
+        return (ask - bid) / mid * 10000.0      # spread in basis points
+    return _cached(("kspread", sym), 60, fetch)
+
+
+def crypto_features(m, price):
+    """Point-in-time crypto feature read for one market, attached to the entry
+    context of CRYPTO markets only. ALL fields default neutral (None) so a
+    non-crypto market — or a crypto market we cannot map to a symbol/strike —
+    leaves _brain_x's crypto features at EXACTLY 0.0 and the global/common path
+    byte-identical.
+
+      crypto_spot_dist:  signed (spot - strike)/strike, the distance of live
+                         spot from the market's threshold (Coinbase spot, with
+                         CoinGecko fallback; 60s cache). None when no strike.
+      crypto_rvol_h:     hourly realized volatility from Kraken's last 24 CLOSED
+                         hourly candles (close-to-close; the in-progress candle
+                         is dropped so no forward high/low leaks). 15-min cache.
+      crypto_spread_bps: live bid/ask spread (bps) from Kraken Ticker (b, a) at
+                         request time. 60s cache.
+
+    Fail-silent and cached; a dead source yields None, never an exception. No
+    future data: every read is a snapshot AS OF NOW (see module header)."""
+    out = {"crypto_spot_dist": None, "crypto_rvol_h": None,
+           "crypto_spread_bps": None}
+    try:
+        q = (m.get("question") or "").lower()
+        sym = None
+        for word, s in _CRYPTO_IDS.items():
+            if word in q:
+                sym = s
+                break
+        if sym is None:
+            return out
+        # hourly realized vol (point-in-time; last 24 closed candles) + spread.
+        out["crypto_rvol_h"] = _crypto_vol(sym)
+        out["crypto_spread_bps"] = _kraken_spread_bps(sym)
+        # spot distance from the threshold, when the question carries a strike.
+        pt = parse_threshold(m.get("question") or "")
+        if pt and pt[1]:
+            spot = _crypto_spot(sym)
+            if spot and spot > 0:
+                out["crypto_spot_dist"] = (spot - pt[1]) / pt[1]
+    except Exception:
+        pass
+    return out
 
 
 def crypto_prob(sym, strike, hours):
@@ -4245,6 +4377,9 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         is_sport = (category == "Sports" or cluster_of(q_full) == "sports-game"
                     or bool(_SPORTSY.search(q_full))
                     or bool(m.get("gameStartTime")))
+        is_crypto = (cat_key(category) == "crypto"
+                     or cluster_of(q_full) == "crypto-price"
+                     or any(w in q_full.lower() for w in _CRYPTO_IDS))
         sports_probe = False
         if is_sport and use_kelly:
             # sports only trade through the probation probe (see
@@ -4285,6 +4420,15 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
               else {"sports_state": None, "sports_post": None,
                     "sportsbook_consensus": None, "sports_elo_fv": None,
                     "sports_div": None})
+        # PER-CATEGORY CRYPTO feature read (point-in-time, fail-silent). Only for
+        # crypto markets; for everything else cf stays the all-None neutral that
+        # leaves _brain_x's crypto features at 0.0 and the global path unchanged.
+        # Reads Coinbase/CoinGecko spot (distance from strike) + Kraken
+        # closed-candle hourly vol + live Kraken ticker spread. No future data:
+        # see crypto_features docstring.
+        cf = (crypto_features(m, price) if is_crypto
+              else {"crypto_spot_dist": None, "crypto_rvol_h": None,
+                    "crypto_spread_bps": None})
         exit_keys = {}
         if strategy == "explore":
             # NO stop: a $1 stake is its own insurance (max loss = cost), and
@@ -4373,6 +4517,12 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                         "sports_div": sf["sports_div"],
                         "sports_state": sf["sports_state"],
                         "sports_post": sf["sports_post"],
+                        # per-category CRYPTO features (point-in-time; all None
+                        # for non-crypto markets -> _brain_x neutral 0.0 -> the
+                        # crypto specialist learns them, global path unchanged).
+                        "crypto_spot_dist": cf["crypto_spot_dist"],
+                        "crypto_rvol_h": cf["crypto_rvol_h"],
+                        "crypto_spread_bps": cf["crypto_spread_bps"],
                         "sports_probe": 1 if sports_probe else None},
             "name": m["question"],
             "legs": [{"market_id": str(m["id"]), "question": m["question"],
@@ -6093,6 +6243,106 @@ def self_test():
                for m in (bt_sp.get("specialists") or {}).values()
                for k in SPORTS_X_KEYS))
 
+    # ---- CRYPTO PER-CATEGORY FEATURE REGRESSION + LEAKAGE GUARD --------------
+    # The weave adds crypto_* features (spot distance from strike, hourly
+    # realized vol, bid/ask spread bps) to _brain_x + a crypto-only entry-context
+    # hook (CoinGecko + Coinbase + Kraken). HARD RULE: on the COMMON path
+    # (non-crypto market / no crypto signal -> crypto ctx None) the model is
+    # IDENTICAL to before. We prove neutrality, the explicit-None==absent
+    # sentinel, signed/scaled/capped values, and point-in-time leakage safety.
+    cx_plain = _brain_x("news", 0.6, base_ctx, "Yes")
+    ok("crypto features default neutral (0.0) with no crypto ctx",
+       cx_plain.get("c_spotdist") == 0.0 and cx_plain.get("c_rvol") == 0.0
+       and cx_plain.get("c_spread") == 0.0)
+    # explicit None crypto fields read identically to their absence (common path)
+    cx_none = _brain_x("news", 0.6, dict(base_ctx, crypto_spot_dist=None,
+                                         crypto_rvol_h=None,
+                                         crypto_spread_bps=None), "Yes")
+    ok("crypto: explicit None == absent (common path byte-identical)",
+       cx_none == cx_plain)
+    # spot distance signs and caps: spot above strike -> positive, capped [-1,1]
+    cx_dist = _brain_x("news", 0.6, dict(base_ctx, crypto_spot_dist=0.04), "Yes")
+    ok("crypto: spot-distance signs and caps (spot>strike -> +, <=1)",
+       0 < cx_dist["c_spotdist"] <= 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, crypto_spot_dist=0.5),
+                    "Yes")["c_spotdist"] == 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, crypto_spot_dist=-0.5),
+                    "Yes")["c_spotdist"] == -1.0)
+    # realized vol and spread are non-negative and saturate to 1.0
+    cx_vol = _brain_x("news", 0.6, dict(base_ctx, crypto_rvol_h=0.01,
+                                        crypto_spread_bps=10.0), "Yes")
+    ok("crypto: vol/spread non-negative and saturate [0,1]",
+       0 < cx_vol["c_rvol"] <= 1.0 and 0 < cx_vol["c_spread"] <= 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, crypto_rvol_h=1.0,
+                                      crypto_spread_bps=500.0),
+                    "Yes")["c_rvol"] == 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, crypto_rvol_h=1.0,
+                                      crypto_spread_bps=500.0),
+                    "Yes")["c_spread"] == 1.0)
+    # brain_adjust byte-identical with crypto ctx absent vs explicit None
+    BRAIN.update(bt)
+    ca_absent = brain_adjust("news", 0.6, base_ctx, "Yes")
+    ca_none = brain_adjust("news", 0.6, dict(base_ctx, crypto_spot_dist=None,
+                                             crypto_rvol_h=None,
+                                             crypto_spread_bps=None), "Yes")
+    ok("crypto: brain_adjust identical when crypto ctx absent vs None",
+       ca_absent == ca_none)
+    BRAIN.update(saved_brain)
+    # crypto features stay weight ~0 when never present in training (inert)
+    ok("crypto: feature weights ~0 when signal never present",
+       abs((bt_a.get("w") or {}).get("c_spotdist", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("c_rvol", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("c_spread", 0.0)) < 1e-6)
+    # LEAKAGE: crypto_features is point-in-time + fail-silent. A market we cannot
+    # map to a crypto symbol yields the all-neutral dict (never an exception,
+    # never a network call) -> deterministic no-network proof.
+    _cf_none = crypto_features({"question": "Will it rain in Tokyo tomorrow?"},
+                               0.6)
+    ok("crypto: fail-silent neutral on a non-crypto market (no symbol)",
+       all(_cf_none[k] is None for k in
+           ("crypto_spot_dist", "crypto_rvol_h", "crypto_spread_bps")))
+    # the spread-bps math is point-in-time top-of-book: (ask-bid)/mid*1e4, and a
+    # crossed/empty book yields None (fail-silent), never a forward read.
+    ORACLE_CACHE.pop(("kspread", "BTC"), None)
+    _real_get = globals()["get_json"]
+    try:
+        globals()["get_json"] = lambda *a, **k: {
+            "result": {"XXBTZUSD": {"b": ["100.0", "1"], "a": ["100.5", "1"]}}}
+        ok("crypto: Kraken spread is (ask-bid)/mid in bps (point-in-time book)",
+           abs(_kraken_spread_bps("BTC") - (0.5 / 100.25 * 10000.0)) < 1e-6)
+        ORACLE_CACHE.pop(("kspread", "BTC"), None)
+        globals()["get_json"] = lambda *a, **k: {
+            "result": {"XXBTZUSD": {"b": ["101.0", "1"], "a": ["100.0", "1"]}}}
+        ok("crypto: crossed/empty book -> None (fail-silent, no leak)",
+           _kraken_spread_bps("BTC") is None)
+    finally:
+        globals()["get_json"] = _real_get
+        ORACLE_CACHE.pop(("kspread", "BTC"), None)
+    # END-TO-END WIRING: a crypto category whose outcome is driven by the
+    # spot-distance feature forms a specialist that ACTUALLY WEIGHTS the crypto
+    # keys, while the GLOBAL model never sees them (its w/specialists are strictly
+    # the pre-crypto feature space). Proves the feature is learned by the right
+    # learner and isolated from the global one.
+    crypto_fix = {"settled": [
+        {"strategy": "news", "pnl": (1.0 if i % 2 == 0 else -1.0),
+         "entry_price": 0.5, "side": "Yes", "category": "Crypto",
+         "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+         "name": "Will Bitcoin be above $66,000 #%d" % i,
+         "context": {"imbalance": 0.5, "spread": 0.01, "hours_to_end": 12,
+                     # spot far above strike on winners, below on losers:
+                     "crypto_spot_dist": (0.08 if i % 2 == 0 else -0.08),
+                     "crypto_rvol_h": 0.01, "crypto_spread_bps": 6.0}}
+        for i in range(60)]}
+    bt_cp = brain_train(crypto_fix)
+    cp = (bt_cp.get("cat_specialists") or {}).get("crypto") or {}
+    ok("crypto: specialist learns the spot-distance key (c_spotdist!=0)",
+       abs((cp.get("w") or {}).get("c_spotdist", 0.0)) > 1e-3)
+    ok("crypto: GLOBAL model carries NO crypto keys (feature space isolated)",
+       all(k not in (bt_cp.get("w") or {}) for k in CRYPTO_X_KEYS)
+       and all(k not in (m or {})
+               for m in (bt_cp.get("specialists") or {}).values()
+               for k in CRYPTO_X_KEYS))
+
     # ===== PER-CATEGORY BRAIN SPECIALIST LAYER (partial pooling, OOS-gated) ===
     # The hard rule, tightened: the GLOBAL model must be byte-identical AFTER
     # adding the category layer, proven on a FIXED MIXED-CATEGORY dataset (not
@@ -6653,6 +6903,14 @@ def attribution(account):
                             else ("price>book" if ctx(t)["sports_div"] > 0.03
                                   else "price<book" if ctx(t)["sports_div"] < -0.03
                                   else "aligned")),
+        # CRYPTO specialist attribution: how trades fared by where live spot sat
+        # relative to the market's threshold. None for every non-crypto trade
+        # (no crypto_spot_dist context) so the bucket stays scoped to crypto.
+        "by_crypto": bucket(rows, lambda t: None
+                            if ctx(t).get("crypto_spot_dist") is None
+                            else ("spot>strike" if ctx(t)["crypto_spot_dist"] > 0.005
+                                  else "spot<strike" if ctx(t)["crypto_spot_dist"] < -0.005
+                                  else "at-strike")),
         "by_sentiment": bucket(rows, lambda t: None if ctx(t).get("news_sent") is None
                                else ("pos" if ctx(t)["news_sent"] > 0
                                      else "neg" if ctx(t)["news_sent"] < 0 else "neutral")),
