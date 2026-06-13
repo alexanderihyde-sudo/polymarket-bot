@@ -7454,6 +7454,15 @@ def self_test():
     bt_dc = brain_train(dc_fix)
     ok("cat: dead-cohort sports rows never form a specialist (era hygiene)",
        "sports" not in (bt_dc.get("cat_specialists") or {}))
+    # (5b) GLOBAL n_eff era hygiene: the credibility weight n_eff (which scales
+    #      live sizing through cred) must apply the SAME dead_cohort exclusion
+    #      the training rows already do — otherwise unrepeatable r90 settles the
+    #      model never trained on would inflate sizing confidence (an era-hygiene
+    #      asymmetry). dc_fix is all dead_cohort, so the correct n_eff is 0;
+    #      effective_n on the SAME rows UNFILTERED is >0, which is exactly what
+    #      dropping the filter from the n_eff comprehension would let through.
+    ok("global: dead-cohort settles never inflate brain n_eff (era hygiene)",
+       bt_dc["n_eff"] == 0 and effective_n(dc_fix["settled"]) > 0)
     # (6) cat_key normalization is point-in-time and total over the families.
     ok("cat: cat_key maps raw tags onto the six families",
        cat_key("Crypto") == "crypto" and cat_key("Economy") == "macro"
