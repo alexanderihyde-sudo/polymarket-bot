@@ -1,140 +1,141 @@
 {
- "starting_cash": 10000.0,
- "scan_interval_minutes": 1,
- "monitor_interval_seconds": 1,
- "settle_check_seconds": 60,
- "research_recorder": {
-  "enabled": true,
-  "interval_seconds": 30,
-  "pages_per_cycle": 8
- },
- "quant": {
-  "kelly_fraction": 0.25,
-  "max_spread": 0.02,
-  "min_book_imbalance": 0.25,
-  "momentum_lookback_hours": 6,
-  "momentum_max_drop": 0.02
- },
- "exit": {
-  "stop_loss_price": 0.85,
-  "take_profit_price": 0.995
- },
- "arbitrage": {
-  "enabled": true,
-  "fast_scan_seconds": 1,
-  "min_edge_cents": 1.5,
-  "max_cost_per_arb": 4000.0,
-  "events_to_scan": 100,
-  "max_dollars_per_trade": 3000.0
- },
- "high_probability": {
-  "enabled": true,
-  "buy_price_min": 0.96,
-  "buy_price_max": 0.989,
-  "max_days_to_resolution": 2,
-  "min_hours_to_resolution": 24,
-  "min_volume_24h": 1000,
-  "max_dollars_per_trade": 300.0,
-  "max_open_positions": 60,
-  "max_open_per_category": 16,
-  "lane90": {
-   "enabled": true,
-   "buy_price_min": 0.9,
-   "buy_price_max": 0.959,
-   "min_hours_to_resolution": 0.5,
-   "max_hours_to_resolution": 24,
-   "size_factor": 0.5,
-   "_evidence": "research +3.8..11.1%/$1 (2 runs), replay sports 1901/1901, live explorer resolutions; kill if by_lane r90 negative over 15+ effective settles"
+  "starting_cash": 10000.0,
+  "scan_interval_minutes": 1,
+  "monitor_interval_seconds": 1,
+  "settle_check_seconds": 60,
+  "research_recorder": {
+    "enabled": true,
+    "interval_seconds": 30,
+    "pages_per_cycle": 8
   },
-  "skip_crypto_threshold": true,
-  "sports_probe": {
-   "enabled": true,
-   "budget": 50,
-   "max_per_trade": 5
+  "quant": {
+    "kelly_fraction": 0.4,
+    "max_spread": 0.02,
+    "min_book_imbalance": 0.25,
+    "momentum_lookback_hours": 6,
+    "momentum_max_drop": 0.02
+  },
+  "exit": {
+    "stop_loss_price": 0.85,
+    "take_profit_price": 0.995
+  },
+  "arbitrage": {
+    "enabled": true,
+    "fast_scan_seconds": 1,
+    "min_edge_cents": 1.5,
+    "max_cost_per_arb": 4000.0,
+    "events_to_scan": 100,
+    "max_dollars_per_trade": 3000.0
+  },
+  "high_probability": {
+    "enabled": true,
+    "buy_price_min": 0.96,
+    "buy_price_max": 0.989,
+    "max_days_to_resolution": 2,
+    "min_hours_to_resolution": 24,
+    "min_volume_24h": 1000,
+    "max_dollars_per_trade": 450.0,
+    "max_open_positions": 60,
+    "max_open_per_category": 16,
+    "lane90": {
+      "enabled": true,
+      "buy_price_min": 0.9,
+      "buy_price_max": 0.959,
+      "min_hours_to_resolution": 0.5,
+      "max_hours_to_resolution": 24,
+      "size_factor": 0.5,
+      "_evidence": "research +3.8..11.1%/$1 (2 runs), replay sports 1901/1901, live explorer resolutions; kill if by_lane r90 negative over 15+ effective settles"
+    },
+    "skip_crypto_threshold": true,
+    "sports_probe": {
+      "enabled": true,
+      "budget": 50,
+      "max_per_trade": 5
+    },
+    "risk_per_trade_pct": 4.0
+  },
+  "explore": {
+    "enabled": true,
+    "buy_price_min": 0.75,
+    "buy_price_max": 0.99,
+    "max_days_to_resolution": 2,
+    "min_hours_to_resolution": 0.03,
+    "min_volume_24h": 200,
+    "max_dollars_per_trade": 1.0,
+    "max_open_positions": 200,
+    "max_open_per_category": 40,
+    "max_spread": 0.04,
+    "min_book_imbalance": 0.0
+  },
+  "allocations": {
+    "arbitrage": 3000.0,
+    "high_prob": 5250.0,
+    "news": 250.0,
+    "explore": 1000.0,
+    "daytrade": 500.0
+  },
+  "risk": {
+    "max_daily_loss_pct": 3.0
+  },
+  "news": {
+    "enabled": true,
+    "min_move_1h": 0.08,
+    "min_volume_24h": 5000,
+    "max_dollars_per_trade": 10.0,
+    "max_open_positions": 10,
+    "stop_drop": 0.08,
+    "target_gain": 0.15,
+    "mode": "fade",
+    "min_hours_to_resolution": 6
+  },
+  "category_allocations": {
+    "Sports": 1000.0,
+    "Esports": 1000.0,
+    "Crypto": 1000.0,
+    "Politics": 1000.0,
+    "Economy": 1000.0,
+    "Business": 1000.0,
+    "Finance": 1000.0,
+    "Pop Culture": 1000.0,
+    "Science": 1000.0,
+    "Tech": 1000.0
+  },
+  "daytrade": {
+    "enabled": true,
+    "min_move_1h": 0.08,
+    "min_volume_24h": 10000,
+    "max_dollars_per_trade": 30.0,
+    "max_open_positions": 12,
+    "stop_drop": 0.05,
+    "target_gain": 0.08,
+    "mode": "fade",
+    "min_hours_to_resolution": 6,
+    "fast_seconds": 15,
+    "fast_move_5m": 0.03
+  },
+  "bankroll": {
+    "risk_per_trade_pct": 2.0,
+    "max_heat_pct": 20.0,
+    "dd_ladder": [
+      [
+        2,
+        0.75
+      ],
+      [
+        4,
+        0.5
+      ],
+      [
+        6,
+        0.25
+      ]
+    ]
+  },
+  "memory": {
+    "budget_gb": 15,
+    "price_mem_hours": 720,
+    "price_mem_tokens": 20000,
+    "book_days": 14,
+    "_comment": "15GB in-RAM budget: 30d price ticks + 14d depth ladders + hot research corpus"
   }
- },
- "explore": {
-  "enabled": true,
-  "buy_price_min": 0.75,
-  "buy_price_max": 0.99,
-  "max_days_to_resolution": 2,
-  "min_hours_to_resolution": 0.03,
-  "min_volume_24h": 200,
-  "max_dollars_per_trade": 1.0,
-  "max_open_positions": 200,
-  "max_open_per_category": 40,
-  "max_spread": 0.04,
-  "min_book_imbalance": 0.0
- },
- "allocations": {
-  "arbitrage": 3000.0,
-  "high_prob": 5250.0,
-  "news": 250.0,
-  "explore": 1000.0,
-  "daytrade": 500.0
- },
- "risk": {
-  "max_daily_loss_pct": 3.0
- },
- "news": {
-  "enabled": true,
-  "min_move_1h": 0.08,
-  "min_volume_24h": 5000,
-  "max_dollars_per_trade": 10.0,
-  "max_open_positions": 10,
-  "stop_drop": 0.08,
-  "target_gain": 0.15,
-  "mode": "fade",
-  "min_hours_to_resolution": 6
- },
- "category_allocations": {
-  "Sports": 1000.0,
-  "Esports": 1000.0,
-  "Crypto": 1000.0,
-  "Politics": 1000.0,
-  "Economy": 1000.0,
-  "Business": 1000.0,
-  "Finance": 1000.0,
-  "Pop Culture": 1000.0,
-  "Science": 1000.0,
-  "Tech": 1000.0
- },
- "daytrade": {
-  "enabled": true,
-  "min_move_1h": 0.08,
-  "min_volume_24h": 10000,
-  "max_dollars_per_trade": 30.0,
-  "max_open_positions": 12,
-  "stop_drop": 0.05,
-  "target_gain": 0.08,
-  "mode": "fade",
-  "min_hours_to_resolution": 6,
-  "fast_seconds": 15,
-  "fast_move_5m": 0.03
- },
- "bankroll": {
-  "risk_per_trade_pct": 2.0,
-  "max_heat_pct": 20.0,
-  "dd_ladder": [
-   [
-    2,
-    0.75
-   ],
-   [
-    4,
-    0.5
-   ],
-   [
-    6,
-    0.25
-   ]
-  ]
- },
- "memory": {
-  "budget_gb": 15,
-  "price_mem_hours": 720,
-  "price_mem_tokens": 20000,
-  "book_days": 14,
-  "_comment": "15GB in-RAM budget: 30d price ticks + 14d depth ladders + hot research corpus"
- }
 }
