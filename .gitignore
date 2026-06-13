@@ -32,6 +32,7 @@ chart_model.json
 market_model.json
 outcome_model.json
 sportsedge_model.json
+crossmarket_model.json
 
 # === backtest / research outputs ===
 backtest_results.json

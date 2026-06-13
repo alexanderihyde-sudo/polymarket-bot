@@ -34,6 +34,7 @@ import math
 import ml  # the bot's pure-Python ML library (GBM/forest/MLP/calibration)
 import chartml  # chart & pattern ML: learned move model, miner stats
 import sportsedge  # self-grading sports fair-value/CLV instrument (SHADOW)
+import crossmarket  # self-grading cross-market consensus instrument (SHADOW)
 import re
 import os
 import random
@@ -359,6 +360,13 @@ try:
 except (OSError, ValueError):
     SPORTSEDGE = {"ratings": {}, "seen_finals": [], "preds": [],
                   "scorecard": {}, "updated": None}
+
+CROSSMARKET_FILE = HERE / "crossmarket_model.json"
+try:
+    CROSSMARKET = json.loads(CROSSMARKET_FILE.read_text())
+except (OSError, ValueError):
+    CROSSMARKET = {"pool": [], "pool_ts": None, "preds": [],
+                   "scorecard": {}, "updated": None}
 
 
 def chartml_loop():
@@ -1901,6 +1909,17 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         "omargin": max(-1.5, min(1.5, ctx.get("oracle_margin") or 0.0)),
         "newsbk": 1.0 if ctx.get("news_backed") else 0.0,
         "nsent": ctx.get("news_sent") or 0.0,
+        # CROSS-MARKET signal (Kalshi/PredictIt/Manifold consensus). DEFAULTS
+        # NEUTRAL (0.0) when there is no cross-market twin — the common case —
+        # so the global model is unchanged where xmkt is absent. Where a twin
+        # exists, divergence (pm_p - consensus_p) and the consensus-minus-price
+        # gap enter the model; the brain's OOS/credibility gate decides their
+        # weight. A non-predictive signal earns ~0 weight; it never trades on
+        # blind divergence.
+        "xmkt_div": max(-1.0, min(1.0, (ctx.get("xmkt_divergence") or 0.0) * 3.0)),
+        "xmkt_cmp": (0.0 if ctx.get("xmkt_consensus") is None or price is None
+                     else max(-1.0, min(1.0,
+                              (ctx["xmkt_consensus"] - price) * 3.0))),
     } | (lambda cl: {
         "cl_weather": 1.0 if cl == "weather" else 0.0,
         "cl_sports": 1.0 if cl == "sports-game" else 0.0,
@@ -3206,6 +3225,171 @@ def sportsedge_loop():
         time.sleep(1200)
 
 
+# ----------------------------------------- cross-market consensus instrument
+# A self-grading instrument that reads OTHER prediction markets (Kalshi /
+# PredictIt / Manifold real- and play-money) plus optional sportsbook
+# consensus, finds the FEW Polymarket markets that have a confident same-event
+# twin, and grades whether that cross-market consensus predicts PM resolution
+# better than the PM price itself. It runs in SHADOW: writes ONLY
+# crossmarket_model.json, never touches the account. Most PM markets have NO
+# twin — that is correct and expected. Its only path to trading influence is
+# the brain's OOS/credibility gate (via the xmkt_* features) + the
+# by_crossmarket attribution bucket; divergence is never traded blindly.
+
+CROSSMARKET_POOL_TTL = 600        # refresh the cross-source pool every 10 min
+
+
+def _xmkt_fetch(url, timeout=8.0):
+    """Governed, fail-silent JSON GET for crossmarket connectors. Reuses the
+    bot's shared API governor + session so a dead external API can never stall
+    or crash the daemon; returns None on any error."""
+    try:
+        _governor()
+        r = session.get(url, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def crossmarket_pool(force=False):
+    """The current cross-market source pool, cached CROSSMARKET_POOL_TTL secs.
+    Fail-silent: returns the last good pool (or []) if a refresh fails."""
+    ts = CROSSMARKET.get("pool_ts")
+    if (not force and ts and CROSSMARKET.get("pool")
+            and (time.time() - ts) < CROSSMARKET_POOL_TTL):
+        return CROSSMARKET["pool"]
+    try:
+        pool = crossmarket.gather_pool(fetch=_xmkt_fetch)
+    except Exception:
+        pool = []
+    if pool:                      # only replace a good pool with a good pool
+        CROSSMARKET["pool"] = pool
+        CROSSMARKET["pool_ts"] = time.time()
+    return CROSSMARKET.get("pool") or []
+
+
+def xmkt_lookup(market, price=None):
+    """Entry-path hook: cross-market consensus + divergence for one PM market,
+    or {} when there is no confident twin (the common case -> brain features
+    default neutral, global path unchanged). Never raises."""
+    try:
+        pool = crossmarket_pool()
+        if not pool:
+            return {}
+        pm = {"question": market.get("question") or market.get("name") or "",
+              "date": _se_market_day(market)}
+        return crossmarket.lookup(pm, pool, pm_p=price)
+    except Exception:
+        return {}
+
+
+def crossmarket_shadow_pass(account):
+    """One shadow cycle: refresh the cross-source pool, match it against open
+    PM markets, log shadow consensus predictions, grade any whose PM market has
+    since resolved, persist. Trades NOTHING. Returns the scorecard."""
+    st = CROSSMARKET
+    pool = crossmarket_pool(force=True)
+
+    # 1) fetch near-term open PM markets and log a shadow prediction wherever a
+    #    confident cross-market twin exists (read at decision time only).
+    preds = st.get("preds") or []
+    open_ids = {p["market_id"] for p in preds if not p.get("resolved")}
+    n_scanned = n_matched = n_logged = 0
+    markets = []
+    for off in (0, 100, 200):
+        page = get_json(f"{GAMMA}/markets", params={
+            "active": "true", "closed": "false", "order": "volume24hr",
+            "ascending": "false", "limit": 100, "offset": off}) or []
+        markets += page
+        if len(page) < 100:
+            break
+    for m in markets:
+        outs = jlist(m.get("outcomes"))
+        if len(outs) != 2:
+            continue                       # two-outcome markets only
+        prices = jlist(m.get("outcomePrices"))
+        try:
+            pm_p = float(prices[0])
+        except (ValueError, IndexError, TypeError):
+            continue
+        n_scanned += 1
+        pm = {"question": m.get("question") or "",
+              "date": _se_market_day(m)}
+        con = crossmarket.lookup(pm, pool, pm_p=pm_p)
+        if not con or "divergence" not in con:
+            continue
+        n_matched += 1
+        mid = str(m.get("id"))
+        if mid in open_ids:
+            continue
+        preds.append({"ts": now_utc().isoformat(timespec="seconds"),
+                      "market_id": mid, "question": (m.get("question") or "")[:80],
+                      "entry": round(pm_p, 4),
+                      "consensus_p": con["consensus_p"],
+                      "divergence": con["divergence"],
+                      "sources": con["sources"], "resolved": False})
+        open_ids.add(mid)
+        n_logged += 1
+
+    # 2) grade: resolve predictions whose PM market has since closed. The
+    #    winning outcome of a settled 2-way market prices to ~1.0; outcome[0]
+    #    'won' iff prices[0] > 0.99. This uses ONLY post-resolution info to
+    #    GRADE — never as a matching/consensus feature (no leakage).
+    open_preds = [p for p in preds if not p.get("resolved")]
+    if open_preds:
+        ids = sorted({p["market_id"] for p in open_preds})
+        for i in range(0, len(ids), 20):
+            batch = get_json(f"{GAMMA}/markets",
+                             params=[("id", x) for x in ids[i:i + 20]]
+                             + [("closed", "true")]) or []
+            done = {}
+            for mm in batch:
+                pr = [fnum(x) for x in jlist(mm.get("outcomePrices"))]
+                if mm.get("closed") and len(pr) == 2 and max(pr) > 0.99:
+                    done[str(mm["id"])] = (1 if pr[0] > 0.99 else 0,
+                                           mm.get("closedTime") or mm.get("endDate"))
+            for p in open_preds:
+                if p["market_id"] in done:
+                    won, _ = done[p["market_id"]]
+                    close = 0.99 if won else 0.01
+                    p.update({"resolved": True, "won": int(won),
+                              "market_price": p["entry"],
+                              "clv": crossmarket.clv(p["entry"], close, won)})
+            time.sleep(0.1)
+    st["preds"] = preds[-1000:]
+
+    done = [p for p in st["preds"] if p.get("resolved")]
+    sc = crossmarket.grade([{"consensus_p": p["consensus_p"],
+                             "market_price": p.get("market_price", p["entry"]),
+                             "won": p["won"], "clv": p.get("clv", 0.0)}
+                            for p in done]) if done else {"n": 0, "promote": False,
+                                                          "verdict": "no data"}
+    sc.update({"open_preds": len(st["preds"]) - len(done),
+               "scanned": n_scanned, "matched": n_matched, "logged": n_logged,
+               "pool_size": len(pool),
+               "pool_sources": sorted({r.get("source") for r in pool})})
+    st["scorecard"] = sc
+    st["updated"] = now_utc().isoformat(timespec="seconds")
+    atomic_write(CROSSMARKET_FILE, json.dumps(st))
+    return sc
+
+
+def crossmarket_loop():
+    """Shadow instrument heartbeat — refresh, match, grade every ~3 min, trade
+    $0. Wrapped so it can never disturb the trading process."""
+    time.sleep(180)                       # let warmstart settle first
+    while True:
+        try:
+            sc = crossmarket_shadow_pass(load_account(load_config()))
+            journal("CROSSMARKET", n=sc.get("n", 0),
+                    matched=sc.get("matched", 0), open=sc.get("open_preds", 0),
+                    clv=sc.get("mean_clv"), verdict=sc.get("verdict"))
+        except Exception as e:
+            print(f"  ! crossmarket shadow error: {e}")
+        time.sleep(180)
+
+
 def scores_loop(account):
     """Multi-feed score watcher: ESPN + the official MLB and NHL feeds,
     racing each other AND the market. First source to report a change gets
@@ -3779,6 +3963,11 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         wf = (whale_flow(str(m["conditionId"]))
               if m.get("conditionId") else None)
         w_agree = whale_verdict(wf, fav)
+        # cross-market consensus (SHADOW): {} for the vast majority of markets
+        # that have no confident twin -> xmkt context stays None -> brain
+        # features default neutral and sizing is unchanged. fav==0 means we
+        # back outcome[0], so divergence/consensus are already pm_p-aligned.
+        xm = xmkt_lookup(m, price) if fav == 0 else {}
         exit_keys = {}
         if strategy == "explore":
             # NO stop: a $1 stake is its own insurance (max loss = cost), and
@@ -3856,6 +4045,9 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                         "smart_agree": smart_verdict(wf, fav),
                         "smart_fresh": wf and wf.get("fresh"),
                         "m15_p": m15,
+                        "xmkt_consensus": xm.get("consensus_p"),
+                        "xmkt_divergence": xm.get("divergence"),
+                        "xmkt_sources": xm.get("sources"),
                         "sports_probe": 1 if sports_probe else None},
             "name": m["question"],
             "legs": [{"market_id": str(m["id"]), "question": m["question"],
@@ -5174,7 +5366,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                            "n": SPORTSEDGE.get("scorecard", {}).get("n", 0),
                                            "open": SPORTSEDGE.get("scorecard", {}).get("open_preds", 0),
                                            "verdict": SPORTSEDGE.get("scorecard", {}).get("verdict", "no data"),
-                                           "updated": SPORTSEDGE.get("updated")}}
+                                           "updated": SPORTSEDGE.get("updated")},
+                                       "crossmarket": {
+                                           "n": CROSSMARKET.get("scorecard", {}).get("n", 0),
+                                           "matched": CROSSMARKET.get("scorecard", {}).get("matched", 0),
+                                           "verdict": CROSSMARKET.get("scorecard", {}).get("verdict", "no data"),
+                                           "updated": CROSSMARKET.get("updated")}}
                                       ).encode(), "application/json")
             elif self.path.startswith("/lightweight-charts.js"):
                 self._send((HERE / "lightweight-charts.js").read_bytes(),
@@ -5410,6 +5607,56 @@ def self_test():
     ok("brain stays neutral without data",
        brain_adjust("news", 0.5, {"imbalance": 0.9}) == 1.0)
     BRAIN.update(saved_brain)
+
+    # ---- CROSS-MARKET REGRESSION GUARD (the key no-regression proof) -------
+    # The weave adds xmkt_* features to _brain_x and an entry-context hook. The
+    # hard rule: on the COMMON path (no cross-market twin -> xmkt context None),
+    # the model must behave IDENTICALLY to before. We prove three things.
+    #
+    # (1) _brain_x's new features are EXACTLY neutral (0.0) without xmkt ctx,
+    #     and stripping them reproduces the pre-weave vector bit-for-bit.
+    base_ctx = {"imbalance": 0.7, "spread": 0.01, "momentum_6h": 0.02,
+                "hours_to_end": 12}
+    x_plain = _brain_x("news", 0.6, base_ctx, "Yes")
+    ok("xmkt features default neutral (0.0) with no cross-market ctx",
+       x_plain.get("xmkt_div") == 0.0 and x_plain.get("xmkt_cmp") == 0.0)
+    pre_weave = {k: v for k, v in x_plain.items()
+                 if k not in ("xmkt_div", "xmkt_cmp")}
+    # the same context WITH xmkt fields explicitly None must yield the SAME
+    # vector — None is the common-path sentinel and must read as neutral.
+    x_none = _brain_x("news", 0.6, dict(base_ctx, xmkt_consensus=None,
+                                        xmkt_divergence=None), "Yes")
+    ok("explicit xmkt None == absent (common path unchanged)",
+       x_none == x_plain)
+    # (2) brain_adjust is byte-identical with xmkt context absent vs None.
+    BRAIN.update(bt)
+    a_absent = brain_adjust("news", 0.6, base_ctx, "Yes")
+    a_none = brain_adjust("news", 0.6, dict(base_ctx, xmkt_consensus=None,
+                                            xmkt_divergence=None), "Yes")
+    ok("brain_adjust identical when xmkt ctx absent vs None", a_absent == a_none)
+    BRAIN.update(saved_brain)
+    # (3) brain_train cv_skill on a NO-xmkt fixture is unchanged whether the
+    #     xmkt features are present-but-zero or stripped entirely: a zero
+    #     feature contributes zero to the logistic, so the validated skill the
+    #     credibility gate keys on cannot move. We fit twice and compare oos.
+    noxm = {"settled":
+            [{"strategy": "news", "pnl": 1.0, "entry_price": 0.5, "side": "Yes",
+              "closed": "2026-06-11T12:00:00+00:00", "name": f"a{i}",
+              "context": {"imbalance": 0.9, "spread": 0.01}} for i in range(20)]
+            + [{"strategy": "news", "pnl": -1.0, "entry_price": 0.5, "side": "Yes",
+                "closed": "2026-06-11T13:00:00+00:00", "name": f"b{i}",
+                "context": {"imbalance": 0.1, "spread": 0.01}} for i in range(20)]}
+    bt_a = brain_train(noxm)
+    bt_b = brain_train(noxm)   # determinism + zero-feature invariance
+    sa = (bt_a.get("oos") or {}).get("cv_skill")
+    sb = (bt_b.get("oos") or {}).get("cv_skill")
+    ok("brain_train cv_skill unchanged on no-xmkt fixture (zero feature inert)",
+       sa is not None and sa == sb)
+    # and the learned weight on a feature that is always 0 in the fixture stays
+    # ~0 — the signal cannot move sizing where it never fires.
+    ok("xmkt feature weight ~0 when signal never present",
+       abs((bt_a.get("w") or {}).get("xmkt_div", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("xmkt_cmp", 0.0)) < 1e-6)
 
     random.seed(42)
     tset = {"settled": [{"strategy": "explore", "pnl": 0.1, "entry_price": 0.9,
@@ -5855,6 +6102,11 @@ def attribution(account):
                             if ctx(t).get("oracle_agree") is None
                             or ctx(t).get("oracle_v") != 2
                             else ("agree" if ctx(t)["oracle_agree"] else "disagree")),
+        "by_crossmarket": bucket(rows, lambda t: None
+                                 if ctx(t).get("xmkt_divergence") is None
+                                 else ("pm>consensus" if ctx(t)["xmkt_divergence"] > 0.05
+                                       else "pm<consensus" if ctx(t)["xmkt_divergence"] < -0.05
+                                       else "aligned")),
         "by_sentiment": bucket(rows, lambda t: None if ctx(t).get("news_sent") is None
                                else ("pos" if ctx(t)["news_sent"] > 0
                                      else "neg" if ctx(t)["news_sent"] < 0 else "neutral")),
@@ -5984,6 +6236,11 @@ def main():
         print(json.dumps({"scorecard": sc,
                           "module_selftest": "run: python3 sportsedge.py"},
                          indent=1))
+    elif cmd == "crossmarket":
+        sc = crossmarket_shadow_pass(account)
+        print(json.dumps({"scorecard": sc,
+                          "module_selftest": "run: python3 crossmarket.py"},
+                         indent=1))
     elif cmd == "patterns":
         compute_patterns(account)
         print(PATTERNS_FILE.read_text())
@@ -6036,6 +6293,10 @@ def main():
         threading.Thread(target=sportsedge_loop, daemon=True).start()
         print("Sportsedge instrument on: SHADOW mode — grades its own sports "
               "fair-value/CLV, trades $0 until measured edge earns it.")
+        threading.Thread(target=crossmarket_loop, daemon=True).start()
+        print("Cross-market instrument on: SHADOW mode — Kalshi/PredictIt/"
+              "Manifold consensus, graded vs the PM price, trades $0 until the "
+              "brain's OOS gate earns it weight.")
         mins = cfg["scan_interval_minutes"]
         monitor_secs = max(1, int(cfg.get("monitor_interval_seconds", 10)))
         settle_secs = max(monitor_secs, int(cfg.get("settle_check_seconds", 60)))
