@@ -1,0 +1,46 @@
+# === SECRETS — NEVER COMMIT ===
+.env
+.envtab
+
+# === python caches / virtualenv ===
+__pycache__/
+*.pyc
+venv/
+
+# === logs ===
+*.log
+
+# === runtime state (daemon rewrites these continuously) ===
+paper_account.json
+brain.json
+learning.json
+models_state.json
+patterns.json
+reentry.json
+history.json
+news_stats.json
+scores_stats.json
+skill_history.json
+wallet_intel.json
+risk_report.json
+decisions.jsonl
+trade_log.csv
+.last_settled
+
+# === model artifacts (refit at runtime) ===
+chart_model.json
+market_model.json
+outcome_model.json
+sportsedge_model.json
+
+# === backtest / research outputs ===
+backtest_results.json
+lab_results.json
+sim_results.json
+research_results.json
+
+# === misc ===
+data/
+old_bot_backup.py
+^c
+autopilot_state.json

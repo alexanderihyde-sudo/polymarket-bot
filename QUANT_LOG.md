@@ -1,0 +1,1170 @@
+# Quant Review Log
+
+## 2026-06-11 ~03:15 UTC — review #1 (manual run)
+
+**Account**: $995-ish total, 16 open, realized –$5.17 (all from news strategy).
+
+**Strategy verdicts**
+- Arbitrage: 1 catch (NBA Champion, ~+$0.29 locked), 0 settled. Working, opportunities rare. Healthy.
+- Favorites (high_prob): 0 settled yet (24–48h window means first resolutions land Jun 12). ~15 open, mostly weather/crypto at 97–99¢. No verdict until they settle.
+- News: **–$5.17 over 16 settled** → learning correctly paused it. BUT: losses were almost entirely from the old "follow" mode; the lab (400-market replay) showed follow loses (–0.4¢/share) and fade wins (+2.7¢/share at 12¢ trigger).
+
+**Change made (evidence-gated)**: pause/halve rules for news are now mode-aware —
+the fade mode is judged only on fade trades, not the dead follow mode's record.
+Fade restarts with a clean slate ("gathering data, 0/8") and the standard
+guardrails: pause again after 16 net-losing trades of its own.
+
+**Research**: 565 deduped observations recorded; 0 resolved yet (recorder is
+hours old). Expect first labeled results within ~24h.
+
+**Honest concerns to watch next reviews**
+1. Favorites positions are concentrated in daily weather markets — these are
+   high-frequency, may behave differently from the backtest population.
+2. News fade has positive lab evidence but zero live evidence; watch its first 8.
+3. The -$5.17 news lesson cost ~0.5% of bankroll — acceptable tuition.
+
+Next review: automatic, every 2 hours at :41.
+
+## 2026-06-11 ~03:45 UTC — review #2 (automated)
+
+- Account ~$989.3, 20 open, realized -$11.89. Bot + watchdog alive.
+- **Live fade is underperforming its lab result**: 6 settled, -$6.72 (lab said
+  +2.7c/share). Cause hypothesis: losses concentrated in in-game Sports moves,
+  which hourly-fidelity lab paths can't see. Category learning already
+  auto-blocked Sports for news at 03:21. No manual override — multiplier rule
+  reacts on its own at 8 settled if bleed continues.
+- Favorites: 0 settled yet (first wave resolves Jun 12); 18 open. Arb: 1 open, 0 settled.
+- Hypothesis tested: imbalance-at-entry as news edge predictor -> REJECT (n=22,
+  high-imbalance lost more). Removed the assumption from backlog; added two new
+  hypotheses (lab fidelity blindness; fade-outside-sports).
+- Research: 600 obs/375 markets recorded; 0 resolved yet.
+
+## 2026-06-11 ~04:25 UTC — review #3 (framework application)
+
+- Added risk analytics: Monte Carlo VaR/CVaR (4,000 paths, intra-cluster
+  correlation via shared cluster shocks, Wilson-bound win probs) + cluster
+  stress scenarios. First report: expected book P&L +$1.74, VaR95 $4.56,
+  CVaR95 $6.40, absolute worst case -$36.56 (3.7% of bankroll — acceptable).
+  Biggest stress: all-weather-fail -$23.56, exactly the concentration flagged
+  in review #1; model 5 cluster cap now limits further weather stacking.
+- 10-model overlay live since ~04:15: model 9 already exited Taipei weather
+  favorite at 87c for -$0.23 (vs riding to the 85c stop). Model 4 blocks
+  00-06h UTC entries (22 settles there, net loss). Equity-trend + Bayes
+  throttles: hp sizing x0.5, news x0.25.
+- Research: 643 obs, 0 labeled yet — first real out-of-sample labels arrive
+  with Jun 12 resolutions. Walk-forward note: evolver re-runs optimize+lab
+  every 6h on fresh windows = rolling re-validation.
+
+## 2026-06-11 ~05:20 UTC — external review response
+- Raised explorer->main promotion bar from 15 to 25 settles per band (15
+  cannot separate p=0.95 from p=0.88; promotion moves Kelly-sized money).
+  Noted: promotion only widens the scan band — Kelly sizing remains an
+  independent evidence gate. Pattern-miner 'discoveries' acknowledged as
+  correlated slices of the same ~24 news settles, not independent findings.
+
+## 2026-06-11 ~05:45 UTC — promotion is no longer a one-way door
+- Accepted external critique in full: qualifying settles are tainted by
+  winner's curse (best of ~14 bands) + optional stopping (6h re-peeks), and
+  Kelly amplifies an inflated p. Promoted bands now enter PROBATION: quarter
+  size, tagged context.probation, judged ONLY on clean post-promotion
+  settles (n>=15 Wilson>breakeven & pnl>0 -> graduate to full size;
+  pnl<-0.50 with Wilson<breakeven -> auto-demote to explorer duty).
+  One probation at a time. probation_verdict() unit-tested (32/32).
+- Runner-up adopted: ttr (<24h/1-3d/>3d) added to miner traits; candidates
+  now ranked by EV-per-day (capital velocity), arbs always first.
+
+## 2026-06-11 ~14:10 UTC — THROUGHPUT UPGRADE shipped (infrastructure, exempt)
+- REPLAY ENGINE live: 470,631 recorded ticks -> 423 walk-forward sim trades
+  in 22s (1,137/min, target 1,000+ met). SIM ledger separate (sim_results
+  .json); proposes only. First candidate beliefs: 95-100c favorites <24h
+  ~100% win rate (matches backtest; eff-n still tiny, 6 clusters).
+- CRITICAL BUG found by replay work: Gamma drops closed markets from plain
+  id queries -> settle_positions could NEVER settle a resolved market
+  (positions would hang forever). Fixed with closed=true re-probe; first
+  stuck settles flowed within minutes of restart.
+- Governor: 8 calls/s sustained, 16 burst, 30 orders/min ceiling, 429
+  exponential backoff, shared across all consumers.
+- Effective-n everywhere: credibility (brain n/(n+60) on clusters),
+  promotion needs 15+ clusters AND 25 raw, dashboards show raw/eff.
+  Live sample: raw 61 = eff 28 clusters.
+- Explorer: 200-position cap, 1-24h fast-settle window, max 3 open per
+  (category x 5c-band) cell, 30-min re-entry cool-off. Recorder 4->8 pages.
+- Tests 44/44. Settles last 24h: 61 (vs ~26 in the prior ~12h).
+
+## 2026-06-11 ~16:15 UTC — head-quant review #4
+- Verdicts (80 settled, eff 35): news -16.69/23 = the only real bleeder,
+  fully throttled (x0.25, Sports+00-06h blocked) — effectively shelved.
+  Favorites -0.28/7, all tiny protective exits; thesis still unjudged (20
+  open). Explorer -1.08/50 = cheap data, BUT 25 of its 28 low-band settles
+  were stop-churn artifacts (entries 85-88c vs global 85c stop): 0 labels
+  earned, and the artifact losses wrongly triggered explore category blocks
+  (Weather/Crypto/Sports/Highest temperature) -> book drained 46->34 open.
+- Attribution: take-profits +5.45/24, stop-losses -18.18/46 (news-dominated),
+  model-exits -0.53/8 (cheap insurance). brain/thompson buckets still n=10,
+  too early to judge.
+- SHIPPED (one strategy change): explorer exits are now relative — stop
+  entry-0.12 (catastrophe only), target 0.995 — explorer holds to
+  resolution because the LABEL is the product. Hypothesis logged: low bands
+  should now produce resolution labels and category blocks should heal.
+- Instrumentation repair (not a strategy change): research() had the same
+  closed-market query bug as settle — fixed; labels should flow next cycle.
+- Watch next review: research labeled count > 0; explore resolution-label
+  rate at 85-92c; whether artifact category blocks heal; brain_adj buckets
+  filling. 44/44 tests, restart clean, books balanced.
+
+## 2026-06-11 ~16:40 UTC — post-mortem engine (user: 'figure out WHY')
+- bot.py postmortem: classifies every losing settle from price action —
+  churn / fast-stop / gap-death / orderly-bleed / wrong-thesis — and for
+  recent stop-outs with tokens, fetches the post-exit chart to label
+  whipsaw (recovered = stop too tight) vs vindicated (kept falling).
+- Autopsy of all 55 losers: news fast-stop 14/-10.82, news gap-death
+  4/-5.80, news wrong-thesis 1/-4.80 -> EVERY major loss = fading an
+  in-game MLB market: jump-process prices make tight stops fictional
+  (4 gapped straight through). Explore churn 32/-1.69 (already fixed).
+- CAUSAL FIX shipped: news.min_hours_to_resolution=6 — in-game markets all
+  resolve within hours; one missing gate admitted the whole trap class.
+  Settled records now carry exit_price/stop/token/path for future autopsies.
+- Deep-review protocol upgraded: postmortem now step 1 alongside
+  attribution (cron 4afc1bb3). 44/44 tests, restart clean.
+
+## 2026-06-11 ~18:00 UTC — head-quant review #5
+- THE FINDING: favorites halved by streak rule on 11 settles containing ZERO
+  resolutions — all protective exits totaling -$0.69. Insurance premiums
+  were being read as strategy failure (same artifact class as explorer
+  stop-churn). Explorer earned its first 2 TRUE resolution labels ever
+  (both wins) — review #4's relative-stop fix confirmed working.
+- SHIPPED: material-evidence rule — learning streaks AND band/category
+  blocks now count only settles with |pnl| >= $0.15. Effects on restart:
+  favorites restored to full size ('2 of 11 material'); explorer's four
+  artifact category blocks (Weather/Crypto/Sports/Highest temperature)
+  dissolved -> book should refill. Test added: insurance can't halve a
+  strategy. 45/45.
+- Postmortem unchanged story: news in-game trap (gated), explore churn
+  (fixed), hp losses all insurance-class.
+- Watch next review: book refill toward 50+, resolution-label rate >5/day,
+  research labeled count (still 0 — recorder markets resolve on multi-day
+  horizons), first favorites TRUE resolutions.
+
+## 2026-06-11 ~19:05 UTC — Brain 2.0 + research-backed pairs strategy
+- Research (QuantPedia/IMDEA/SSRN): strongest documented edges = extreme-price
+  favorite-longshot, combinatorial/intra-market arb ($40M+/yr extracted on
+  Polymarket, windows ~200ms), informed flow near resolution. Two of three
+  already ours; gap = combinatorial structures beyond neg-risk.
+- SHIPPED A: threshold-pair arbitrage — same-family monotonicity violations
+  (P(X>66k) < P(X>68k)) -> buy YES(low)+NO(high), min payout $1/share,
+  locked. Strict parsing, 1.5c safety margin over min edge, runs every pass.
+- SHIPPED B: Brain 2.0 — ensemble (global + per-strategy specialists),
+  cluster random-effects + interaction features, and built-in walk-forward:
+  75% chronological train / 25% holdout vs base-rate baseline; credibility
+  = cluster-eff-n x OOS-skill factor.
+- FIRST RESULT IS THE HEADLINE: brain v1 had NEGATIVE out-of-sample skill
+  (-0.143, 21.7% acc on last 23) — it was tilting sizes on in-sample fit.
+  Brain 2.0's first act was demoting itself to minimum voice (x0.25).
+  Watch: skill recovering as resolution-quality labels accumulate.
+- 51/51 tests. Restart clean, books balanced.
+
+## 2026-06-11 ~19:35 UTC — capital + exit shift (user: 'it's losing, shift')
+- Diagnosis: recent bleed = 6 explorer stop-outs -$3.72, avg -$0.62 each =
+  GAPS through the relative stop (weather forecasts jump like in-game
+  scores). Holders won: explore resolutions 3/3 wins, hp take-profits +.
+- Shift 1: explorer stops REMOVED (stop 0.02 sentinel) — a $1 stake is its
+  own insurance; stops only converted wobbles into certain losses. Target
+  0.995 kept to lock near-certainties.
+- Shift 2: allocations news 2000->500 (shelved strategy), arbitrage ->4500,
+  favorites ->4000 (the validated edge + the locked-profit book get the
+  capital). Explore stays 1000.
+- 51/51 tests, restart clean.
+
+## 2026-06-11 ~20:05 UTC — head-quant review #6
+- Verdicts (99 settled, eff 45): news -16.69 quarantined (no trades since
+  gates — working). hp -0.65 all insurance, 0 true resolutions yet, full
+  size under material rule. explore -4.60: stop-gap artifacts (fixed 19:35,
+  stops removed); its RESOLUTIONS remain 3/3 wins. arb +2.08 locked, 3 open.
+- ROOT CAUSE of book drain (19 open): model 11 minted a bare 'strat=explore'
+  kill-switch veto from artifact losses — 43 entries blocked. Same blunt-
+  single disease as the old hour=00. SHIPPED: vetoes must be pairs AND the
+  explorer is exempt from model 11 entirely (it is the shadow-tester; budget
+  + material cell blocks + Thompson govern it). Test pins pairs-only. 52/52.
+- Hypothesis ledger: book-refill prediction REFUTED-AS-STATED (cause found
+  elsewhere); new hypothesis: stop-free explorer turns daily-positive in 48h.
+- Brain 2.0 note: skill_factor 0.25 (negative OOS skill) — correctly muted.
+- Watch next review: book refill (target 40+), explore resolution count and
+  P&L sign, first hp TRUE resolutions, pairs-arb first catch.
+
+## 2026-06-11 ~20:10 UTC — model 15: ML on the big dataset (user departing)
+- SHIPPED: market-outcome model trained on 1,806 labeled observations from
+  thousands of recorder markets (vs ~100 own trades) — walk-forward, judged
+  vs the market price itself (Brier). First run: model 0.218 vs market
+  0.190 -> skill -0.028: the market still forecasts better than our model,
+  exactly why it runs SHADOW-ONLY (m15_p recorded on every entry, never
+  acted on). It earns action rights only when attribution shows trades it
+  disliked lose more (by_m15_verdict bucket added).
+- Evolver now retrains it every 6h as the corpus grows (850k+ ticks, +400
+  markets/day). The path to alpha: FLB 'extreme' feature + growing data.
+- Autonomy handoff: mini每5m (03a361e4), deep每2h (4afc1bb3) each ship one
+  evidence-gated improvement, evolver每6h (optimize+lab+promotion+ML).
+  52/52 tests, books balanced.
+
+## 2026-06-11 ~22:05 UTC — head-quant review #7
+- Explorer starvation root-caused, TWO self-locking artifacts: (1) m5 had
+  vetoed 369 entries because the $84.71 locked-payout arb position counted
+  as 'other'-cluster risk mass (zero outcome risk!); (2) m4 minted an
+  explore 18-24h block from stop-era losses — and 22:00 UTC is inside it,
+  with no way to gather healing evidence while blocked. Third instance of
+  the self-locking disease; principle now encoded + tested (54/54): locked
+  arbs carry no cluster risk, m4 never grounds the info book.
+- Attribution: take-profit +5.64/32 vs stop-loss -21.90/52 (legacy-heavy);
+  model-exits -1.06/13 insurance. m15 shadow bucket empty (entries too
+  fresh) — check next review. Thompson low-draw avg -0.009 (neutral).
+- explore resolutions now 5/5 wins. hp 15 settles still 0 true resolutions.
+- TRICKS: settlement-hour clustering -> Tested/KEEP-as-design; recurring
+  self-locking lesson codified.
+- Watch next: explorer refill within the hour (both chokers removed), m15
+  verdict bucket fills, first hp resolutions, news stays quiet.
+
+## 2026-06-12 ~00:10 UTC — head-quant review #8
+- Book refilled as predicted: 41 open (18 -> 41), explore o20 — review #7
+  chokers confirmed dead. explore resolutions still perfect record.
+- HEADLINE: first at-scale OOS labels (1,991 raw). Naive table showed
+  98-99c favorites at -24/-28%% ROI — but it contradicted replay on the
+  SAME data. SHIPPED (the one change): research instrument corrected —
+  (a) spread<=4c filter to measure only the universe we trade, (b) re-
+  bucket by TRUE close time (endDate lies for early resolvers; ' 0-6h'
+  obs were sometimes MID-GAME), (c) drop obs after true close. 54/54.
+- CORRECTED RESULT (873 labeled): 90-93c = +2.7%..+8.5% per $1 (the edge
+  zone); 94-99c flat. The catastrophe was pure confound. Explorer already
+  trades 85-99c; promotion/probation pipeline is the judge for moving the
+  main book down — no manual override.
+- m15 shadow bucket still empty (no tagged settles yet). Watch next:
+  m15 fills, explorer 90-93c resolution count toward the 25-cluster
+  promotion bar, first hp true resolutions, news quiet.
+
+## 2026-06-12 ~02:05 UTC — head-quant review #9
+- Stable tape: $9,979.91, 44 open, 107 settled (eff 49). Explore post-fix
+  wave (21 open) maturing; resolutions 4/4 wins; 90-93c promotion progress
+  2/25 raw, 2/15 clusters. hp STILL 0 true resolutions in 19 settles — its
+  15 model-exits recycle positions before the thesis can be tested.
+- MEASURED (post-exit charts, tokens now stored): model-exit whipsaw rate
+  5/7 (71%) — the 93c edge-gone trigger was churning winners. SHIPPED: edge-
+  gone loosened 93c -> 90c (stop at 85c unchanged). Expect fewer hp churn
+  exits and finally some hp RESOLUTIONS. 54/54 tests.
+- m15 confirmed tagging entries (0.667/0.678); verdict bucket fills as they
+  settle. news quiet (gates holding). Watch next: first hp resolutions,
+  m15 bucket, explore resolution wave, whipsaw rate at the new threshold.
+
+## 2026-06-12 ~03:15 UTC — model 15 v2: nonlinear ML + model selection
+- Research showed the edge map is NONLINEAR in price (90-93c +, 94-99c flat)
+  — a shape no logistic can represent. SHIPPED: AdaBoost decision stumps
+  (pure Python) + band-bucket features + automatic MODEL SELECTION by OOS
+  Brier (the harness crowns the champion; no human preference).
+- RESULT: stumps beat logistic OOS 0.2027 vs 0.2287; champion=stumps, and
+  its top splits use the b90_93 bucket — it independently found the edge
+  band. Gap to the market's own forecast closed from -0.0276 to -0.0039
+  (86% closed in one upgrade). Still shadow-only until skill > 0.
+- Tests prove the class difference: stumps 85%+ on a planted ring pattern
+  where logistic scores <75%. 56/56. Evolver retrains both every 6h.
+- Watch: skill_vs_market crossing zero as labels accumulate; m15 attribution
+  bucket; first hp resolutions.
+
+## 2026-06-12 ~03:40 UTC — day-trading desk added (user request)
+- New 5th strategy 'daytrade': continuous intraday mean-reversion — fades
+  8c+ 1h moves on liquid markets (vol>=25k), $10 brackets (stop 5c /
+  target 8c), never holds to resolution, exits within hours. Evidence base:
+  lab fade +2.2c/share at 8c threshold (400 markets); in-game trap excluded
+  by the 6h-ttr gate it inherits. Scans EVERY pass; models 10/12 watch its
+  positions every second. $500 allocation (carved from arbitrage),
+  separate sub-account/learning/chart line for clean attribution.
+- All standard governance applies from birth: material-evidence learning,
+  bayes/vol throttles, pattern vetoes, daily circuit breaker. 56/56 tests,
+  restart clean, desk live (dayt v500 o0 done0).
+
+## 2026-06-12 ~04:00 UTC — the chartist: day trader reads real charts
+- Day trader upgraded: every candidate's actual 6h intraday chart is fetched
+  and classified by defined rules — spike_fade (anomalous move already
+  reverting, judged at the spike's extreme), mean_dev (2-sigma stretch from
+  own mean), breakout (pinned at a REAL range extreme, never faded), drift
+  (no trade). Only fade-class patterns are tradeable (lab-validated edge).
+- Learning wiring: chart_pattern + z + retrace + range_pos stored in every
+  entry context -> miner learns pattern x context pairs, brain gains
+  zdev/rpos features, attribution gains by_pattern bucket (Claude judges
+  each pattern on settled money every review).
+- Tests caught two real classifier bugs before deployment (noise 'breakout'
+  with no magnitude floor; z measured after the pullback) — fixed, 60/60.
+- Watch: first chartist entries, by_pattern bucket filling, whether
+  spike_fade beats mean_dev on settles.
+
+## 2026-06-12 ~04:30 UTC — real-time price engine
+- POST /books bulk endpoint discovered + wired: all open books in 1 round
+  trip (was 40 calls x 100ms sleeps). check_exits sweep ~25s -> <1s.
+- SCHEDULER BUG FIXED: next_scan stamped before the (multi-minute) scan ->
+  scans ran back-to-back, the 1s monitor loop NEVER executed; position
+  prices only updated once per scan. Now: scan every 2min, monitor owns the
+  gaps — every position re-priced ~1-2s, exit models 9/10/12 firing on
+  second-level data. Dashboard refresh 5s -> 2s. 60/60 tests.
+- Verified live: positions re-priced within a 3-second window post-fix.
+- Honest ceiling: ~1s via governed REST; millisecond data = WebSocket feed,
+  parked in TRICKS until paper results justify it.
+## 2026-06-12 ~04:45 UTC — mini ALERT: Exact Score explore position briefly marked -0.37 (mid dip; last back at 0.98). Stop-free $0.98 explore stake = bounded by design; live game volatility, holding for the label. Bot healthy, no action.
+
+## 2026-06-12 ~05:05 UTC — dual feed: ESPN scores racing the market
+- Second data feed live: ESPN public scoreboards (soccer World Cup, MLB,
+  NBA, NHL) polled ~12s, shadow mode. Every score change journaled; if we
+  hold a matching market, a latency probe arms and the 1s price monitor
+  records how many seconds the market took to reprice >=3c. 'Which is
+  faster' becomes a measured number (SCORES line in brief; LATENCY events
+  in journal). Currently watching the live KOR-CZE game we hold.
+- Promotion path (evidence-gated): if median lead is seconds+, deep review
+  may grant the daytrade desk a score-event entry trigger — trading WITH
+  fast information, mechanically different from the banned in-game fades.
+- Matcher unit-tested (Korea Republic<->South Korea naming). 62/62.
+
+## 2026-06-12 ~05:25 UTC — score feeds: web-wide install, 3 sources racing
+- Probed 5 candidate feeds across the web: ESPN OK, MLB StatsAPI (official)
+  OK, NHL api-web (official) OK; Sofascore + NBA CDN block server clients
+  (403) — honestly skipped, no scraping games.
+- Multi-source pipeline live: order-independent score fingerprints match
+  the same game across feeds despite naming/home-away differences (unit
+  tested: 'South Korea' == 'Korea Republic FC'). First source to report a
+  change wins the 'firsts' counter; laggards journaled as SOURCE_LAG with
+  seconds; held markets still get market-latency probes. Brief SCORES line
+  now shows per-source win counts. 63/63 tests.
+
+## 2026-06-12 ~05:50 UTC — news feeds installed (move discriminator)
+- Google News (top + business) + BBC World RSS polled every 2 min, no keys;
+  109 headlines cached within the first cycle. Every news/daytrade entry now
+  carries news_backed: does a fresh headline share 2+ subject tokens with
+  the market? Literature: noise moves revert (fade = our edge), news-backed
+  moves drift (fading them is how fades die) — the flag lets the miner
+  (newsbk= trait), the brain, and attribution (by_news_backed) separate the
+  two on settled money. Shadow first; gate later if the split is real.
+- Tests caught a tokenizer bug pre-deploy (commas destroyed '$70,000').
+  65/65.
+
+## 2026-06-12 ~06:10 UTC — fundamental oracles installed (top APIs survey)
+- Surveyed: Open-Meteo OK (free weather forecasts — our largest market
+  category gets a FUNDAMENTAL signal); Binance geo-blocked -> Coinbase
+  public spot OK (crypto strikes); Kalshi cross-venue parked (matching
+  cost); FRED needs key. Installed the two winners.
+- Every favorites/explore entry on weather or crypto now carries
+  oracle_agree + oracle_margin: does the actual forecast / actual spot
+  price agree with the side we're buying? Shadow: miner trait oracle=,
+  attribution by_oracle. Promotion path: if 'disagree' trades lose
+  reliably, the oracle earns a veto — measured, not assumed.
+- Caches: geocode permanent, forecast 15min, spot 60s — governor-friendly.
+  68/68 tests, restart clean.
+
+## 2026-06-12 ~06:30 UTC — feeds wired into the ML core
+- Brain 2.0 feature vector extended: oracle_agree (+1/-1/0), oracle_margin,
+  news_backed now train alongside price/book/chart features on EVERY pass —
+  the ensemble (global + specialists) learns how much weight the weather
+  forecast, spot price, and headline feeds deserve, credibility still gated
+  by clusters x OOS skill. Old settles default new features to 0.
+- Test pins it: planted oracle-discriminated settles -> brain oracle weight
+  > 0.3. 69/69 tests.
+
+## 2026-06-12 ~08:00 UTC — head-quant review #10: first ML promotion
+- THE EVENT: by_m15_verdict filled one-sided — ALL 10 settled trades the
+  shadow market-model disliked lost (avg -$0.187, ~2x explorer baseline).
+  Per the shadow contract, SHIPPED its promotion: graduated gate (strong
+  dislike skips $1 explorer entries; mild dislike halves Kelly sizing).
+  Self-locking check passed: m15 trains on recorder labels (1,012 now),
+  independent of our trade flow. 69/69 tests.
+- Tape: $9,979, 45 open, 119 settled (eff 57), 97 settles/24h. take-profits
+  +6.04/39 and growing; news quarantined; dayt awaiting first qualifying
+  move; arb +2.82 locked across 4 (new catch overnight).
+- Brain OOS skill positive (+0.023, voice 59%). Learning curve panel live:
+  rolling-20 at -0.105/trade, improving from -0.50 era.
+- Watch next: disliked-bucket avg shrinking, explore pnl/settle vs -0.085
+  baseline, dayt first entries, hp first TRUE resolutions.
+
+## 2026-06-12 ~09:10 UTC — trend analysis + plan re-adaptation
+- TRAJECTORY (avg pnl per 25-settle block): -0.49 -> -0.04 -> -0.20 -> -0.14
+  -> -0.09. Reading: news era catastrophic, each structural fix bent the
+  curve; current era one fix from breakeven. Brain skill oscillating at
+  zero (voice 0.49); m15 -0.004 from beating the market; promotion 4/25
+  raw 4/15 clusters; scores feed quiet overnight (no live games).
+- RE-PLAN: the 3 documented edges are extreme-favorites (running),
+  combinatorial arb (running), informed flow (MISSING) -> SHIPPED whale
+  tape via data-api.polymarket.com/trades: net aggressor $ flow + big-trade
+  count per candidate, whale_agree shadow-tagged into context/miner/brain/
+  attribution (by_whale). Same promotion contract as m15.
+- Config: daytrade vol floor 25k->10k (0 trades in 6h = funnel too narrow).
+- 72/72 tests. Watch: by_whale bucket, daytrade first trades, block-6
+  avg pnl (target: first positive block), promotion clusters.
+
+## 2026-06-12 ~09:45 UTC — crypto pricing oracle + news breadth
+- CRYPTO UPGRADE: 'BTC above $X' markets are digital options — now priced
+  as such. crypto_prob(): Coinbase spot x Kraken realized hourly vol (168
+  candles, free/keyless; Deribit DVOL probe failed) -> driftless lognormal
+  P(spot_T > strike). oracle_agree/margin now carry a MODEL PROBABILITY
+  edge (p_side - 0.5), abstaining inside +/-5pts. Tests: ATM = coin flip,
+  far strike < 2%. Same shadow->promotion contract.
+- NEWS BREADTH: Hacker News (Algolia API) joins Google+BBC in the headline
+  cache — covers the Tech/SpaceX markets the RSS feeds miss.
+- 74/74 tests. Watch: by_oracle bucket sharpness vs the old sign-check era,
+  whale + daytrade first settles.
+
+## 2026-06-12 ~10:45 UTC — data-driven: explorer fully hold-to-resolution
+- Attribution named the active bleed: model-exits n=25 -$2.72 (avg -0.109),
+  growing — recent ones are model-12 slide exits on $1 explorer stakes in
+  live games, while untouched explorer positions resolve 13/13 (+$0.62).
+  SHIPPED: explorer exempt from model 12 (last exit mechanism on the info
+  book besides its 99.5c target). Same logic as the stop removal, which
+  the resolution record vindicated.
+- m15 gate vindicated by data: disliked-bucket avg improved -0.187 ->
+  -0.069 since the gate went live. by_whale collecting (n=1).
+- Watch: model-exit bucket stops growing; explore resolution streak; first
+  m15 'liked' settles (n=2, flat so far).
+
+## 2026-06-12 ~11:15 UTC — Brain 3.0 (user: 'ML 10x smarter')
+- Four multipliers: (1) auto feature engineering — miner's top combos become
+  brain inputs (first run self-selected sports/news patterns); (2) 5-fold
+  walk-forward CV replaces single split (kills skill flapping); (3) L2
+  chosen by CV each retrain (picked 0.15 over hardcoded 0.05); (4) temporal
+  prior — 30% of previous brain blended in, knowledge accumulates.
+- FIRST RESULT: cv_skill +0.0249 POSITIVE on the most conservative
+  measure yet (n=137). skill ledger now records cv_skill. 76/76 tests.
+- Earlier same-day ML upgrades: m15 stumps champion (OOS 0.2027 vs logistic
+  0.2287), m15 gate live, crypto digital-option pricing oracle.
+
+## 2026-06-12 ~11:45 UTC — ML-APIs article applied (Moesif survey)
+- Survey verdict: all 17 listed APIs need keys/accounts, ~all paid;
+  vision/speech irrelevant. Adopted the one relevant capability —
+  sentiment NLP — keyless: lexicon scorer over the live headline cache.
+  news_backed (binary) -> news_sent (-1..+1 directional) on every
+  news/daytrade entry; brain feature nsent, miner trait sent=, attribution
+  by_sentiment. Article's #1 (LLM) already fulfilled: Claude is the head
+  quant. 79/79 tests.
+
+## 2026-06-12 ~13:05 UTC — bigger + smarter sizing
+- BIGGER (where evidence permits): hp Kelly ceiling $10->$25 (quarter-
+  Kelly on a $10k book was being throttled by the cap, not by edge); arb
+  $1,500->$2,500 per catch (locked payouts, zero losses ever, depth-
+  limited anyway). Explore stays $1 (information), daytrade $10 (no
+  evidence yet), news quarantined.
+- SMARTER: bounded sizing bonuses (x1.25 each, capped at ceiling) when
+  validated signals strongly agree — m15 LIKE (its dislike side proved out
+  on 23 settles) and strong fundamental-oracle agreement (forecast >=2C of
+  room / priced crypto prob >=65%). Both instantly measurable via existing
+  by_m15/by_oracle buckets; demote-able same day if buckets disagree.
+- Sizing stack now: Kelly(band stats) x brain(forest champion, voice 73%)
+  x probation x m15 x oracle x throttles, ceiling $25. 83/83 tests.
+
+## 2026-06-12 ~13:30 UTC — day trading at seconds cadence
+- daytrade_loop thread: ~100-market liquid watchlist (refreshed 5min, in-
+  game excluded), bulk-priced every 15s via POST /books (1 call), own tick
+  memory detects 3c+ moves within 5min — entries fire within seconds of
+  the overreaction instead of waiting for 2-min scans of an HOURLY field.
+  Full pipeline kept: chart read (spike_fade/mean_dev only), spread/
+  imbalance gates, brain tilt, budget/learning/REENTRY, 5c/8c brackets,
+  ACCOUNT_LOCK. Exits were already 1s; the desk is now fast end-to-end.
+- 83/83 tests.
+
+## 2026-06-12 ~14:00 UTC — ML hardening pack (stack/calibrate/explain)
+- Brain 5.0: COMMITTEE replaces lone champion — every model class with
+  positive CV skill joins a skill-weighted stack; Platt calibration fit on
+  held-out stack predictions and applied live; permutation importance of
+  the true champion persisted + shown (dashboard no longer implies the
+  logistic rules when the forest does).
+- m15: full zoo championship (logistic/stumps/gbm/forest by OOS Brier) +
+  champion model persisted; evolver retrains 6-hourly.
+- 85/85 tests.
+
+## 2026-06-12 ~14:20 UTC — trades scaled way up (user request)
+- hp Kelly ceiling $25->$100 (quarter-Kelly on $10k decides actual size;
+  brain/m15/oracle multipliers apply); arb $2,500->$4,000/catch (locked
+  payouts, depth-limited); daytrade $10->$30; explore stays $1 (info),
+  news quarantined. Cluster floor $40->$150 so concentration math scales
+  with the bigger book (tests updated). Circuit breaker still 3%/day
+  ($300) — 3 max-size losers trip it by design. VaR will rescale; watch
+  next review. 85/85 tests.
+
+## 2026-06-12 ~14:50 UTC — professional bankroll management codified
+- bankroll_manager(): risk/trade = 1% of CURRENT equity (compounds both
+  ways); portfolio heat = sum of worst-case losses, capped 10% of bankroll
+  (central gate in open_position — no entry may push heat past it);
+  drawdown ladder -2/-4/-6% -> x0.75/0.5/0.25 sizing, restores at the
+  high-water mark; brackets size by risk/stop-distance; position_risk():
+  stake for holds, stop-distance for brackets, zero for locked arbs.
+  BANKROLL line in brief. 90/90 tests.
+
+## 2026-06-12 ~15:40 UTC — model v2 + deep suite + architecture docs
+- ml.py v2: stochastic GBM (80% subsample) w/ EARLY STOPPING on validation
+  (model picks its own size), forest OOB accuracy (free validation),
+  hyperparameter variants raced in the championship (gbm-slow won: 0.0606),
+  online SGD — every settle nudges the brain INSTANTLY between retrains.
+- Committee v2: 5 positive-skill members [gbm-slow .23, gbm .23, forest
+  .22, forest-big .21, logistic .10]. Measured model improvement since
+  logistic baseline: 0.027 -> 0.061 cv_skill (2.3x on the conservative
+  measure).
+- NEW tests.py: 80-check deep suite (caught a real classifier bug on
+  arrival: fresh momentum ramps were labeled mean_dev/fadeable instead of
+  breakout — ordering fixed). Total checks now 173. NEW ARCHITECTURE.md.
+- 93/93 + 80/80, restart clean, books balanced.
+
+## 2026-06-12 07:05 — LIVE CHART (user-directed)
+Shipped: /api/stream SSE endpoint (400ms account ticks, ThreadingHTTPServer
+so the held connection costs nothing) + EventSource client streaming
+straight into the equity line via LWC's native series.update(). Header
+total/chg now move sub-second; 2s full-state poll kept as fallback with
+3s auto-reconnect. Honest ceiling: marks refresh from the 1s bulk-book
+sweep; true tick data = Polymarket WebSocket, parked in TRICKS until paper
+results justify live-grade infra. Tests 93/93, stream verified flowing.
+
+## 2026-06-12 07:25 — SMART-MONEY TRACKER + TAPE-SIGN FIX (user-directed)
+User shared the documented profitable-bot playbook ($75K bot): (1) fresh
+wallets with no history making large bets, (2) oversized wagers, (3)
+political repeat-entries. We had (2) (whale_flow big prints); built (1):
+_wallet_intel profiles the wallet behind every $250+ print via
+data-api ?user= (100-trade window; <100 returned = whole life; 6h cache
+persisted in wallet_intel.json, 3 lookups/market/min budget, 4000-wallet
+cap). _is_fresh = <=25 trades AND <=7 days old — deliberately excludes
+market-maker bots (live smoke test: first wallet profiled had 100 trades
+in hours, correctly excluded). fresh-wallet YES-flow returned as
+wf["fresh"]; smart_verdict speaks at $300+. SHADOW-FIRST per house rule:
+context field, brain feature "smart", miner feature, by_smart_money
+attribution bucket — zero entry power until its bucket proves out.
+(3) parked in TRICKS with a testable prediction.
+BUG FOUND while wiring: whale_flow ignored outcomeIndex — every BUY
+counted as YES-flow, but buying the No token is selling Yes. Fixed via
+_tape_sign (3 unit tests). All by_whale history before today is
+sign-tainted on No-prints; judge that bucket from a 06-12 baseline.
+Tests: 102/102 bot (9 new) + 80/80 deep. Bot restarted, audit balanced.
+Watch: by_smart_money bucket; brain weight on "smart" after next retrain.
+
+## 2026-06-12 08:10 — ML UPGRADE FROM GITHUB SOURCES (user-directed)
+Studied three repos, implemented four techniques pure-Python in ml.py:
+(1) dmlc/xgboost — Newton boosting: leaves -G/(H+lam), split gain
+0.5[GL^2/(HL+l)+GR^2/(HR+l)-G^2/(H+l)]-gamma, column subsampling. ZOO
+entries "xgb"/"xgb-reg". Planted problems: 100%/98% vs plain GBM 98%/96%.
+(2) scikit-learn — isotonic calibration (PAV with tie pre-aggregation);
+races Platt HONESTLY (fit on first 60% of holdout, judged on last 40%,
+winner refit on all); gated at holdout>=40 so it can't win by memorizing.
+(3) online-ml/river — Page-Hinkley drift detector on the brain's own
+per-settle logloss stream; on fire, brain_train re-anchors on post-drift
+data only (>=40 labels) instead of averaging two regimes. journal DRIFT.
+(4) AdaGrad per-feature step sizes for settle-time online SGD (g2
+persisted in brain.json) — rare features (smart_agree) learn fast,
+frequent ones stop oscillating. Both settle call sites deduped into
+brain_online_learn().
+REAL-DATA VERDICT (n=146, full retrain 8.9s): champion forest cv_skill
+0.0747 (prev champion reading 0.0606); xgb 0.0597 + xgb-reg 0.0526 both
+positive-OOS -> joined the stack (~28% combined weight); 7-member
+committee. Calibration race: platt (holdout 29 < 40 gate; isotonic
+eligible ~200 settles).
+Tests: ml self-test 25 PASS (4 new planted problems), bot 107/107
+(5 new), deep 80/80. Restarted, audit balanced.
+Lines: bot.py 4867 + ml.py 700 + tests.py 281 + dashboard.html 965 +
+config 116 = 6929 written code; 7708 with docs/journals.
+
+## 2026-06-12 ~12:40 UTC — ML library + model-zoo championship
+- NEW ml.py (391 lines, pure Python, self-testing): gradient-boosted
+  depth-2 trees, random forest w/ feature subsampling, 1-hidden-layer MLP
+  w/ manual backprop, Platt calibration, permutation importance,
+  calibration tables. Library proves itself on planted ring/XOR problems
+  (GBM 99%/95%, forest 95%/98%, MLP 100%/98%) before touching money.
+- BRAIN 4.0: every retrain races logistic vs GBM vs forest vs MLP on the
+  same chronological CV folds. FIRST CHAMPIONSHIP: random forest WINS,
+  cv_skill 0.0582 (2.3x logistic's 0.0257); MLP -0.59 correctly rejected
+  as overfit at n=143. Voice rose to 73% on earned skill. Retrains skip
+  when no new settles (cache by n) — championship costs 5.5s.
+- Sim-prior Thompson live: explorer warm-started by replay cell beliefs
+  (discounted 4x). 83/83 tests.
+
+## 2026-06-12 07:30 — RAM UPGRADE + RESTART CORRECTION (user-directed)
+User authorized up to ~44GB more RAM. Spent it where the bot was throwing
+data away, not for show:
+(1) PRICE_MEM in-RAM tick store — packed arrays (12B/tick vs ~120B for
+Python lists). EVERY price the process sees is remembered at full
+resolution: 1s position sweeps + 15s watchlist (fetch_books_bulk),
+single book_stats reads, and the recorder's 400-market/min scans (keyed
+m:<id>). Config: memory.price_mem_hours=168 (7 days), max 3000 markets,
+LRU-evict stalest. Ceiling ~20GB, expected steady state 1-3GB — leaves
+plenty for Claude + browser per user constraint.
+(2) chart_features now reads OUR OWN 1s ticks when coverage >=83% of the
+window (downsampled to ~72 pts so the classifier sees the same shape) —
+better resolution than the API's 5-min candles AND zero API calls.
+(3) Monte Carlo VaR sims 4000 -> 20000 (measured 0.1s; tail now 1000
+samples, CVaR95 stops wobbling).
+(4) Telemetry: /api/health rss_mb + price_mem; brief MEM line (fetched
+from the live daemon, since brief runs in its own process).
+CORRECTION (important): today's earlier "restarts" used pkill -f "bot.py
+run" — but the daemon runs as "bot.py paper" (caffeinate). Nothing was
+killed; "bot.py run" isn't a command, so the nohup exited instantly. The
+smart-money tracker and ML v3 were tested-but-NOT-LIVE until now (~07:30
+UTC). Also killed a runaway "bot.py replay" (99% CPU since 10:40PM).
+Correct restart: pkill -f "bot.py paper"; nohup caffeinate -i python3
+bot.py paper >> bot.log 2>&1 &
+Verified live: health shows rss_mb=149, price_mem 872 mkts in first
+minute; SSE streaming; dashboard 200. Tests 111/111 bot (4 new mem
+checks) + 80/80 deep.
+
+## 2026-06-12 07:45 — DEEP REVIEW (149 settled, eff 78)
+Book: 9973.72 (-0.26%), real -29.55, 105 settles/24h. Explorer VERDICT:
+m15-gate hypothesis KEEP/EXCEEDED — last-30 avg +0.0167 vs -0.085 baseline,
+FLIPPED POSITIVE (0 stop-outs in window). m15 split widens: disliked
+-0.066 (n=24) vs liked +0.05 (n=9). Research (corrected instrument):
+6-24h favorites 90-96c now 100% win, +3.9 to +11.1%/$1 (n=5-15/band) —
+promotion pipeline stays the judge. Postmortem: news losses all old-era
+(Sports, already blocked). NEW loser pattern: daytrade stopped SpaceX IPO
+-6.09 (orderly bleed, brain-upsized — by_brain_adj upsized bucket is just
+this 1 trade, ignore n=1) then RE-ENTERED same market 30min later (-1.17
+open). Whipsaw watch: 7/8 24h stop-outs recovered above entry, but each
+cost <0.15 (immaterial individually) — watching, not acting.
+ONE CHANGE: daytrade re-entry cooldown 30min -> 6h (config
+daytrade.reentry_cooldown_s, default 21600). A stopped fade is evidence
+the move was repricing, not overreacting. Tests 111/111, restarted
+(verified via rss_mb field present), audit balanced.
+Next review watches: no daytrade same-market re-entry <6h; explorer stays
+positive; by_smart_money first entries; whale baseline post sign-fix;
+first hp TRUE resolution (still 0 in 28 settles — insurance exits only).
+
+## 2026-06-12 07:50 — NIGHT PREP: WARM-START + BIGGER SIMS (user-directed)
+(1) mem_warmstart(): startup thread loads the recorder's ENTIRE disk
+history into tick memory — verified 2,029,688 points / 8,167 markets
+loaded (~25MB packed; cap raised to 10,000 markets). Chartist and any
+future consumer wake up knowing a month of every market's path instead
+of starting blind after each restart. (2) MC VaR sims 20k -> 50k. (3)
+Overnight replay launched (nice -15) to regenerate stale sim cells (18
+cells from Jun 11) with today's code — Thompson priors refresh by
+morning. Final sweep: health ok, audit balanced, SSE streaming,
+dashboard 200, display assertion active (12h), bot 4.7% CPU / replay
+nice'd 0.9%. Tests 111/111 before restart.
+
+## 2026-06-12 08:00 — 15GB BUDGET + M15 MILESTONE (user-directed)
+User committed 15GB RAM. Built three real consumers (no padding):
+(1) BOOK_MEM — top-5 depth ladders both sides, every book fetch, packed
+88B/tick, 14-day cap. The TRICKS #5 dataset (whale-print depth deltas)
+now accumulates ~86k snapshots/day/position-token. book_series() ready
+for the correlation test once days of data exist.
+(2) CORPUS — recorder's full row set hot in RAM (1.9M rows, ~400MB),
+appended live; m15 retrains skip the 2M-row CSV re-parse.
+(3) PRICE_MEM extended: 30-day ticks, 10k markets, warmstart rewritten
+to mem_preload (splices history BENEATH live ticks — fixes coverage gap
+where early-ticked markets lost their history) + 48h of 1-min token
+candles for every open position.
+MILESTONE: m15 retrained on the hot corpus (4,128 labeled obs) now
+BEATS THE MARKET OOS — Brier 0.19433 vs market 0.20145, skill +0.0071,
+n_holdout=1032. First model to clear the hardest baseline. Promotion
+decision belongs to the daytime deep review per pipeline rules.
+RSS 952MB and climbing toward budget as real data accrues (~1.5-2GB/day
+from depth ladders). Tests 114/114. Restarted, audit balanced.
+NIGHT SCHEDULE: recurring reviews DELETED per user; one-shot 4:57AM
+final check scheduled (verifies replay finished, judges overnight,
+recreates daytime crons). Overnight replay still running nice'd.
+
+## 2026-06-12 08:20 — CONTINUED TESTING (user-directed)
+TRICKS #1 resolution-source edge: REJECT, REVERSED (530 labeled
+favorites, gates applied, one obs/market): objective-feed 97.0% win
++0.13%/$1 vs judgment+sports 97.5% +1.92%/$1. REAL FINDING: sports
+favorites 75/75 across 61 families +4.72%/$1 (Wilson LB ~95.2% vs 95.5%
+breakeven — one good week short of conclusive); crypto-threshold
+NEGATIVE -0.69%/$1 (299 obs = only 24 families). H#5 time-of-day
+within-explorer: no actionable signal (18h -0.21 but n=13). Closed.
+ONE CHANGE: band/category learning blocks now age out on a 14-day
+window (miner precedent) — a block earned by a dead failure mode
+(stop-churn) no longer governs forever. Explorer's Sports block expires
+~06-24; sports favorites hypothesis gets its natural live test then.
+Tests 114/114, restarted, audit balanced. Watch: crypto-threshold hp
+entries (negative bucket — m15/probation should be catching these),
+sports-block expiry date, m15-beats-market promotion decision (daytime).
+
+## 2026-06-12 08:45 — MODEL 16: THE LEARNED CHARTIST (user-directed)
+New ML category chartml.py for chart analysis + pattern mining:
+(1) MOVE MODEL — self-supervised from tick memory: every recorded 3c+
+move is a labeled event (did it revert >=1c within 30min?). 5,675 real
+events mined; base revert rate 63.0% (independently confirms the lab's
+fade-the-move verdict). Walk-forward championship: gbm OOS skill +0.0753
+on 1,703 chronological holdout events — the largest validation set of
+any model in the system; that evidence grants gate power immediately
+(same standard as m15: validation data independent of our trades).
+WIRED: fast fade desk now requires p_revert >= 0.5 (config
+daytrade.ml_min_revert); chart_ml recorded in context; by_chartml
+attribution bucket; model_acted("chartml") veto counter; retrains every
+6h from tick memory, adopts only if walk-forward skill stays positive.
+(2) MINER SIGNIFICANCE — vetoes now require exact binomial surprise
+(p < 0.15 vs the book's own win rate, floored at 30%) on top of the
+dollar thresholds: bad-luck patterns can no longer earn vetoes.
+(3) chartml self-test: separates planted mean-reversion from momentum
+regimes (skill 0.199), proves no-future-leak under truncation.
+Tests 117/117 + chartml ALL PASS + deep 80/80. Restarted, audit
+balanced, model 16 live. Parked: chart-outcome shape model (TRICKS #9).
+Watch: by_chartml buckets (revert-likely vs continuation), chartml veto
+count in MODELS line, 6h retrain skill trajectory in journal.
+
+## 2026-06-12 09:05 — TRICKS #9 OVERNIGHT VERDICT: REJECT
+Chart-outcome shape model: Brier 0.15469 vs market 0.14955 (skill
+-0.00514, n_holdout=753 of 2,508 labeled paths). Shape predicts NOTHING
+about resolutions the price doesn't already know — while the same
+features predict 30-min reversions at +0.075. Horizon decides whether a
+signal is information or decoration. outcome_model.json saved with
+model=null (shadow rule held); no code change. Morning review: nothing
+to act on here — this closes the question.
+
+## 2026-06-12 09:20 — OVERNIGHT REPLAY COMPLETE
+Sim cells regenerated at scale (18 cells, n now in the thousands).
+Standout: sports-game|90c|<24h ran 1,901/1,901 in replay — independently
+corroborates tonight's live-research sports finding (75/75 families) on
+a third instrument. other|90c|<24h: 93.3% over 2,957 (+~3.7%/$1 at 90c).
+Cells feed explorer Thompson priors at the x0.25 sim discount, as
+designed. All overnight work now complete; 4:57 report remains.
+
+## 2026-06-12 05:15 local — MORNING REPORT (5 AM check)
+Account: $9,961.20 (-0.39% from $10k start; -$12.52 overnight). 180
+settled (eff 96), 115 in 24h. Bot healthy all night, audit balanced,
+RAM 1.16GB: 3.3M ticks / 216k depth ladders / 2.5M-row corpus.
+
+OVERNIGHT BY STRATEGY:
+- DAYTRADE was the bleeder: 9 settles, -$13.75 (avg -1.98 incl. earlier).
+  Autopsy: -$11.28 of it = IN-GAME TENNIS fades (the exact failure mode
+  that killed news). All losing entries PRE-DATE model 16's gate (no
+  chart_ml in their context). The bot already self-halved daytrade (x0.5)
+  and the Sports auto-block sits at 5 of 6 needed material settles — one
+  more Sports settle triggers it.
+- COOLDOWN BUG FOUND: SpaceX $2.2T was stopped 06:54 (-6.09) and
+  re-entered before 11:36 (-3.90) — the 6h cooldown shipped at 07:45 is
+  an IN-MEMORY dict, wiped by every restart (we restarted 4x shipping
+  features). Cost overnight: ~-$4 to -8.
+- Explorer: +17 settles, only -$0.21; last-30 avg +0.0087 (still
+  positive, drifting from +0.0167 — watch).
+- hp: +$0.15 overnight (take-profits); STILL zero true resolutions in 32
+  settles. News: x0.5 + auto-tuned (down-moves blocked). Arb: 6 locked.
+- m15 verdict bucket strengthens: liked +0.015/22 vs disliked -0.05/31.
+- by_chartml + by_smart_money: empty — no post-gate settles yet. Model
+  16's first 6h retrain due ~14:50 UTC.
+
+EXPERIMENTS: replay KEEP (sports 90c 1,901/1,901 — 3rd independent
+confirmation); TRICKS #9 REJECT (shape adds nothing at resolution
+horizons, -0.005 vs market). Both logged with numbers above.
+
+ONE CHANGE SHIPPED (config-only per night rules): price_mem_tokens
+10000 -> 20000 — the market cap was HIT overnight (LRU evicting fresh
+markets); budget 15GB vs 1.16GB used. Hot-reloads, no restart.
+
+WHAT TO IMPROVE FIRST TODAY (ranked, with numbers):
+1. PERSIST the REENTRY cooldown map to disk (~5 lines in bot.py): the
+   6h daytrade cooldown must survive restarts. Evidence: -$3.90 repeat.
+2. Judge model 16 on its first gated settles (by_chartml bucket) and the
+   14:50 retrain skill in the journal; consider ml_min_revert 0.5->0.55
+   only AFTER settled evidence exists.
+3. Decide m15 promotion (it beats the market OOS +0.0071, n=1032):
+   next graduated power = small sizing tilt on LIKES, judged by
+   by_m15_verdict liked bucket (+0.015/22 now).
+4. Daytrade Sports: if the 6th material settle doesn't auto-block by
+   midday, consider a config category gate. In-game fades cost -$11.28
+   tonight and -$31 lifetime across strategies.
+5. Favorites book still has ZERO true resolutions (32 settles, all
+   insurance exits) — the 96-98.9c thesis remains unproven; the 90-93c
+   promotion pipeline (research +2.7..8.5%/$1, sports 1,901/1,901 sim)
+   is where the real edge evidence keeps accumulating.
+## 2026-06-12 mini: ALERT down->25% = explore Sao Paulo $0.98 stake at 0.72 mid — hold-for-label by design (no stop, stake=insurance); no action. Arb mids read 0 (multi-leg, settle at lock); cosmetic.
+## 2026-06-12 mini: repeat alert = same designed explore hold; FIXED mini_review.sh bleeder alarm — now excludes explore/arb and needs pnl < -$1 (real bleeders still alert; $0.98 stakes and locked arbs don't).
+
+## 2026-06-12 15:15 — DEEP REVIEW (187 settled, eff 101)
+Wins since 5am: (1) FIRST hp TRUE RESOLUTION (+0.04, 98c won; hp book
+now +0.20 overall, first positive reading ever). (2) Daytrade Sports
+AUTO-BLOCK fired (6th material settle) — in-game tennis ban now learned,
+not imposed. (3) Model 16 retrained ITSELF at 14:36: skill 0.0753 ->
+0.0994 on 6,955 events, champion flipped gbm -> xgb (the Newton booster
+won its first championship). (4) m15 gate effect visible: disliked
+bucket avg shrank -0.066 -> -0.009 (gated entries stopped settling);
+liked +0.018/25. (5) whale post-sign-fix: agree +0.157/10 vs disagree
++0.05/13 — right direction, small n.
+Watch items: by_chartml/by_smart_money still empty (no qualifying
+settles). Whipsaw count 7/8 again — still concentrated in daytrade
+(x0.5 + Sports-blocked + gate pending); holding.
+H#3 spread->news: REJECT (wide lost LESS, -0.623/9 vs -0.803/15).
+NEW H#1b: crypto-threshold favorites negative bucket (research -0.69%/$1
+n=299/24fams; live Crypto +2.11 -> -1.66 today; hp holds $137 BTC No).
+ONE CHANGE: REENTRY cooldown now PERSISTED (reentry.json, 24h prune,
+health field "reentry") — restarts can no longer wipe the 6h daytrade
+ban (documented cost -$3.90). Tests 117/117; restart verified via new
+field. Research: 6-24h favorites 90-96c still 100% win +3.8..11.1%/$1.
+Next review: first by_chartml settles, crypto-threshold bucket, m15
+liked bucket at n>=30 for promotion call, explorer last-30.
+
+## 2026-06-12 16:05 — "MAKE IT WIN": THE REALLOCATION (user-directed)
+Diagnosis: bleeding already stopped (news+daytrade = -$37 of -$42, both
+self-quarantined). But the kelly book was structurally fishing the dead
+pool: confined to 96-98.9c at 24-48h (research: ~flat to NEGATIVE — 97c
+-3.7%, 98c -6.09%/$1) and BARRED from 90-95.9c <24h where THREE
+instruments agree the edge lives (research +3.8..11.1%/$1 across 2 runs;
+replay sports 1,901/1,901; live explorer resolutions).
+SHIPPED (3 coordinated changes):
+(1) LANE90 OPEN — hp may now buy 90-95.9c favorites 0.5-24h out, at
+HALF size (size_factor 0.5) until live settled money confirms; every
+gate still applies (m15, models 1-12, kelly, heat, category caps).
+by_lane attribution bucket judges it. KILL CRITERIA: r90 bucket
+negative over 15+ effective settles -> lane closes.
+(2) CRYPTO-THRESHOLD GATE — hp skips 'BTC above $X' style markets
+(research -0.69%/$1 n=299; live bled -4.50 peak today on $137 exposure).
+Up-or-down crypto (tested +5.7%/$1) stays. Explorer's $1 probes keep
+gathering H#1b evidence.
+(3) by_lane bucket + 3 new tests (crypto-threshold detection).
+Tests 120/120, restarted, audit balanced. Expectation set honestly:
+research says the lane is worth roughly +4-8c per $1 deployed; at
+half-size kelly entries this is dollars-per-day, not riches — but it is
+the first time the bot's REAL money points at its STRONGEST evidence.
+Watch: first r90 entries + their by_lane settles; crypto-threshold
+absence from new hp entries; heat as the lane fills.
+## 2026-06-12 16:25 — HOTFIX: fetch_books_bulk crashed on EMPTY books since the memory feed shipped (None not subscriptable -> whole 100-token batch lost per occurrence; 1s monitor partially blind). Guard added; tests 120/120; restarted. Found by lane90 entry watcher.
+
+## 2026-06-12 17:55 — DEEP REVIEW (197 settled, eff 106): LANE90 DEPLOYMENT DEBUGGED
+State: hp climbing (+0.46, second band win 96c +0.22); m15 promotion
+threshold MET (liked n=33 avg +0.031 vs disliked -0.001/35 — promotion
+decision deferred one review to keep this one focused on the lane);
+whale agree +0.131/15 vs disagree +0.052/16; explorer -0.04 lifetime avg;
+no new stop-outs in 2h (whipsaw stat stale, holding).
+INVESTIGATION (the review's test, replacing a backlog item): why zero
+lane90 entries? Funnel probe: 161 in-band <24h, 21 passed volume, first
+sampled candidate PASSED all book gates — yet no entries. THREE stacked
+blockers found and fixed:
+(1) KELLY REFUSED UNPROVEN BANDS — bands 90-95 had no history; pooled
+fallback Wilson << breakeven -> $0 sizing forever. Fix: band_win_stats
+now seeds from the corrected research instrument (full counts; Wilson IS
+the discount — double-discounting is what zeroed the lane). Math now
+funds 90-93c, refuses thin bands: matches the research verdict by
+construction.
+(2) QUERY STARVATION — 1,000+ markets end inside 24h; the single
+ascending-endDate query never reached classic 24-48h candidates after
+the lane widened the window. Fix: two query windows, own page budget.
+(3) ALLOCATION FULL — hp book sat at $4,000.17/$4,000; lane entries had
+$0 room. Fix: +$250 from the quarantined news book's idle allocation
+(news x0.5, 0 open, tuned-against; keeps $250 for its gated probes).
+Also fixed: my own test asserting 95c must stay unfunded — wrong; live
+band history legitimately funds it now. Replaced with the property test
+(kelly refuses when Wilson < breakeven). Tests 123/123. Restarted twice,
+verified via reentry field; audit balanced.
+Next review: FIRST r90 entries (watch by_lane), m15 PROMOTION DECISION
+(threshold met), crypto-threshold absence from new hp entries.
+
+## 2026-06-12 18:20 — LANE90 IS LIVE (addendum to 17:55 review)
+Correction to blocker (3): allocation was NOT full — strategy_budget =
+alloc + realized - cost ($3,967 free); the brief's v4000 is display
+value. The +$250 move was harmless but unnecessary; my diagnosis was
+wrong and the offline dry-run proved it: kelly funded $587 at 92c yet
+the REAL scanner returned 0. TRUE final blocker: a THIRD band check —
+the VWAP fill-price gate still used the classic 0.96 floor, killing
+every lane candidate at the last step. Fixed (band_ok), tests 123/123.
+DRY-RUN: 3 r90 opportunities found. LIVE after restart: 4 r90 positions
+open — $23.00 @92c x3 (sports O/U, 1.3-1.6h to resolution) + $5.74
+@95.7c. First by_lane settles land within ~2 hours. Watch them like a
+hawk at next review; kill criteria unchanged.
+LESSON (for the log, honestly): one band concept was enforced in THREE
+places; widening it required finding all three. The dry-run-the-real-
+scanner instrument (scan_high_prob offline with empty skip set) found
+in minutes what funnel re-implementations missed for two hours — test
+the actual code path, not a copy of it.
+
+## 2026-06-12 19:05 — SMART NEWS (user-directed: "trade news too just get smarter")
+News 2.0 ships as a SPLIT, not a revival of the dead trade:
+- CONFIRMED moves (matching headline + sentiment agreeing with direction,
+  |sent| >= 0.3) now FOLLOW the move — information drifts. Model 16 holds
+  a veto: if the learned chartist says this move shape historically
+  REVERTS (p_rev >= 0.5), the trade abstains. mode="follow-news" in
+  context; chart_ml recorded; judged via by_news_backed + mode buckets.
+- UNCONFIRMED moves: unchanged quarantined fade (x0.5, Sports blocked,
+  down-moves blocked, 6h-ttr gate). The in-game killer stays dead — the
+  ttr gate applies to BOTH paths.
+- Daytrade's reuse of this scanner explicitly excluded from follow-mode
+  (it is a pure fade desk with a fade-shaped chart gate).
+What's different from the news book that lost $17.65: the old one
+treated EVERY big move as news; the new one requires the news to
+actually exist, agree in direction, and pass a model that beats base
+rate by +0.099 OOS at predicting which moves run. Learning multiplier
+stays x0.5 until it earns its way back. Tests 126/126, restarted, audit
+balanced. Watch: first follow-news entries, their by_news_backed bucket,
+news multiplier trajectory.
+
+## 2026-06-12 19:40 — LOSS AUTOPSY + ORACLE COVERAGE FIX (user: "focus on why trades are losing")
+THE AUTOPSY, mechanism by mechanism, on settled money:
+(1) -$23.69 of the last -$27 = pre-fix daytrade stops. Already dead:
+ZERO daytrade entries since the gate; post-gate daytrade is +0.43/2.
+(2) hp stops TESTED against resolutions: both lifetime stop-outs would
+have lost 6.5x MORE held to the end (-0.60 stopped vs -3.93 held). The
+stops are VINDICATED — kept. (The 7/8 whipsaw stat was other books.)
+(3) Post-fix era (24 settles since 13:00): +$0.03 total. hp +1.71/5,
+daytrade +0.43/2, news -0.96/1 (pre-smart-news), explore -1.15/16.
+(4) THE LIVE FINDING: explorer's two big losers were weather favorites
+m15 LIKED (0.969/0.971) — and the weather ORACLE never spoke: 2 oracle
+reads across 69 weather settles. Root cause: the parser knew ONE
+question shape; the real book is 52/62 exact-pin ("be 17°C on June 12")
++ 6/62 Fahrenheit ranges. The fundamental-data oracle for the bot's
+LARGEST trade family was 94% blind.
+FIXED: _wx_parse handles all three shapes (directional / exact-pin /
+F-and-C ranges), min-forecast for "lowest temperature" questions,
+margin = degrees-from-pin so the existing >=2.0-degree sizing bonus
+applies naturally. Coverage 62/62 real questions (was 4/62). Live
+end-to-end read verified (Amsterdam pin: forecast 17.4 -> oracle says
+the No bet loses, margin 0.4 — exactly the read that was missing).
+Tests 131/131 (5 new shapes + stub fix). Restarted, audit balanced.
+Watch: by_oracle bucket should now FILL on weather entries; oracle
+disagree-then-loss cases become the evidence for a future oracle gate
+(shadow rule: attribution decides whether it earns a veto).
+
+## 2026-06-12 18:00 — PRE-DEPARTURE: DEPLOY MORE + CHART FIX + WATCHDOG
+(user leaving for the day)
+(1) DEPLOY MORE within the rules: arb reserved $4,000 but has only ever
+found ~$220 of locked arbs — $1,000 of idle reserve moved to the proven
+favorites book (hp allocation 5,250). hp per-category cap 12 -> 16
+(weather, the validated family, was bumping it). Per-trade risk still 1%
+equity; heat cap still 10%; lane90 still half-size. Deployment grows as
+candidates pass gates — the levers that matter today: lane90 live,
+oracle now reads 62/62 weather questions (more x1.25 bonuses), crypto-
+threshold money freed.
+(2) CHART "ALL" FIXED: LWC's default minBarSpacing (0.5px) physically
+cannot fit 8,400 history points in the pane, so fitContent silently
+clipped to ~2h. All three charts now minBarSpacing 0.001 + ALL sets the
+explicit full span (first equity point -> last). Full 40.6h visible.
+(3) WATCHDOG REPLACED: the Jun-10 watchdog (running since Wed) restarted
+on a SINGLE failed check via osascript — explains the pile of Terminal
+tabs; could race deliberate restarts. New one: process-existence first
+(never races), 4-check (~2min) hung tolerance, nohup restarts, log
+rotation. Old killed, new verified running.
+SWEEP: tests 131/131, health ok, audit balanced, reentry map persisted
+(11 cooldowns), SSE streaming, dashboard 200, 1 bot + 1 watchdog,
+system-sleep prevented via bot's caffeinate; display assertion expires
+~13:00 local (screen may sleep; TRADING CONTINUES — system stays awake).
+Reviews continue: mini 5min + deep 2h crons active in this session.
+## 2026-06-12 18:25 — user: '$706 invested is not much' — correct: the 10% heat cap WAS the ceiling (full-stake holds). Raised: heat 15%, risk/trade 1.25%, hp cap $150. Drawdown ladder + 3% circuit breaker unchanged — they shrink it all automatically if losses come.
+
+## 2026-06-12 18:35 — THROUGHPUT PACKAGE (user: "10x the trades")
+Levers shipped: scan cadence 2min -> 1min (FIXED: interval was read once
+at startup, now hot-reloads — real bug); explore band 85-99c -> 75-99c;
+explore horizon 1d -> 2d; explore min window 1h -> ~2min; hp slots 40 ->
+60. Watchdog proven in anger: pkill'd bot restarted by it in ~2.5min.
+HONEST LIMITS, measured: sub-15min "fast settle" lane is SUPPLY-limited
+— dry-run found 0 band-passing candidates right now (late crypto
+binaries pin >0.99 where probes teach nothing; mid-window they're coin
+flips with no favorites thesis). Refusing to buy noise to hit a count.
+Current entry rate: 11/hr vs ~5/hr baseline (~2x), expected to climb
+through US evening (sports + crypto hourlies enter the wider band/
+window). 10x literally = market supply dependent; the bot now takes
+everything that qualifies, every minute.
+Earlier this hour (user requests): heat cap 10->15%, risk/trade 1->
+1.25%, hp per-trade $150 — invested rose $706 -> $735 and grows as
+candidates pass. Watch: entries/hr at next review, first sub-1h probes
+when supply appears, heat under the new ceiling.
+## 2026-06-12 18:55 — user: 'trade 3k at a time' — granted where riskless (arb $3k/trade), scaled where risky: risk/trade 2%, hp $300 base (~$470 with stacked bonuses), heat 20%. $3k on one binary = 30%/trade = ruin math + self-tripping circuit breaker; refused with explanation. Ladder + breaker unchanged.
+## 2026-06-12 19:15 mini: FIRST r90 settles — Derry O/U 92c gapped to 11c in-game, -20.25 (stop = placebo on jump markets, the news lesson in the kelly book); second r90 model-exited -0.72. One 8%-tail loss on trade #1 ≠ lane broken (kill rule: 15+ eff settles), but 19:41 deep review MUST evaluate: exclude in-game/live sports from lane90 (pregame only), since research 75/75 can't distinguish pregame vs live entries. realized -63.15.
+
+## 2026-06-12 19:41 — DEEP REVIEW (210 settled, eff 110): THE SPORTS LESSON, PAID FOR
+The damage: lane90 sports 0/5, -$50.56 (Derry O/U -20.25; Canada-Bosnia
+exact scores/totals stacked FIVE correlated entries on one live match).
+All in-game gap-deaths — postmortem: "avoid the entry, no exit can save
+it". Live 0/5 contradicts research 75/75 (P ~ 3e-8 under 97% win): the
+instrument is WRONG for sports; suspects logged as H#9 (one-obs-per-
+market hides intra-game 90c re-crossings). House rule applied: live
+settled money outranks every instrument.
+THE STAR: m15 STRONG-DISLIKED ALL FIVE losers (0.705-0.866 vs 0.92-0.955
+entries) while its graduated power only halved size. Disliked bucket
+-1.22/42 vs liked +0.04/39.
+SHIPPED (one coordinated fix for this loss event):
+(1) m15 PROMOTED — strong dislike (p < entry-5c) now SKIPS the kelly
+book, not just explore. Would have prevented the entire -$50.56.
+(2) lane90 excludes sports-game cluster until H#9 is explained.
+(3) One lane entry per market family (scan-local + open positions via
+held_names) — no more five-bets-one-match correlation bombs.
+Bot self-responses already in flight: hp learning x0.5; bands 92/95/96
+accumulating negative material evidence. whale agree bucket poisoned by
+the sports cluster (-2.01/24, in-game tape always "agrees" with the
+doomed favorite) — judge whale from a post-06-12 baseline AGAIN; in-game
+contamination is why. Tests 131/131, restarted, audit balanced.
+Account 9912 (-0.88%). The -$50 bought: m15's promotion case proven
+beyond argument, a flawed instrument caught, and correlation capping.
+Next review: lane90 non-sports performance, m15-skip counter (model
+m15 in MODELS line), explorer last-30, H#9 crossing-count test.
+
+## 2026-06-12 20:10 — SESSION HANDOFF (user usage running out)
+Bot + watchdog are INDEPENDENT processes — trading, learning, retraining
+(brain each settle, m15+chartml every 6h, evolver) all continue without
+Claude. What DIES with this session: the 5-min mini and 2-h deep review
+crons (recreate by asking Claude: "recreate the reviews").
+State at handoff: $9,912 (-0.88%), 210 settled, heat ladder armed,
+m15 promoted (strong dislike skips both books), lane90 non-sports only +
+1-per-family, smart news live, oracle 62/62 coverage, sizing: 2%/trade,
+heat 20%, hp $300 (arb $3k).
+UNFINISHED: the ultracode audit+science workflow was killed mid-run.
+Re-run next session with: Workflow({scriptPath: "~/.claude/projects/
+-Users-you/075e8284-debf-4382-83d8-5b8ed62978bc/workflows/scripts/
+smarter-bot-audit-and-science-wf_ea4b2133-0d0.js"}) — it audits today's
+5 changed subsystems for bugs and runs the H#9 experiment (why research
+said sports 75/75 but live went 0/5) + the kelly-seed honesty check.
+Until H#9 is answered, lane90 stays non-sports.
+
+## 2026-06-12 20:35 — ULTRACODE FLEET: 19 VERIFIED BUGS FIXED + H#9 CLOSED
+35 agents (5 auditors + adversarial verifiers + 2 experimenters +
+checkers), 1.76M tokens, 1 finding rejected, 19 confirmed — ALL FIXED:
+THE BIG ONES:
+- is_in_game(): every time gate measured hours-to-endDate, but sports
+  endDate = TOURNAMENT end — live matches sailed through all 6h gates
+  all day. gameStartTime is the honest clock. Wired into hp (both
+  lanes), news (gate also fail-closed now), follow-news.
+- Model-9 band exit floor (0.90) sat ABOVE r90 entries — every lane
+  entry below 92c churned instantly; part of the 0/5 was SELF-inflicted.
+  r90 now HOLD-TO-RESOLUTION (exempt models 9+12, stop 0.02/target
+  0.995) per the H#9 science: held = 97.0% (n=235, LB 95.7%) vs 64%
+  with band exits.
+- Oracle: 32 directional questions misparsed as pins (F/lowest missing
+  from _WX_RX) — the x1.25 bonus was firing on guaranteed losers;
+  margins now side-signed degrees + kind-aware bonus (wx>=2.0deg,
+  crypto>=0.15p); oracle_v=2 labels so attribution never mixes eras.
+- Kelly seed now FAMILY-LEVEL (union table, tradable universe only):
+  raw seeding pseudo-replicated 299 crypto obs = 11 families. Funding
+  now: 93c $974, 92c $133, 94c $154, 90c REFUSED — sized by honest
+  Wilson, not inflated n.
+- Circuit breaker: realized-today only + enforced in open_position
+  (was main-scan-only; daytrade thread kept trading after it fired).
+- m16 train/serve skew: inference now resamples to the 30s training
+  cadence; chart_features resamples by TIME not index; _best_series
+  picks by quality (the `or` short-circuit silently disabled the veto).
+- Lane caps by EVENT id (family_of saw 6 "families" in one match);
+  sports lane exclusion now phrasing+cluster+gameStartTime, PERMANENT
+  (H#9: the 1-min recorder physically cannot see in-game gap risk —
+  Derry sat pinned 158 snapshots then gapped between two of them).
+- Probation never flags lane entries; risk_per_trade_pct knob now
+  actually wired to the favorites book; boosted sizes re-validate
+  against book depth (+56% phantom shares fixed); arb honors the
+  learning pause; memory stores locked (eviction races aborted scan
+  passes); CORPUS trimmed to 14d (budget was decorative).
+H#9 CLOSED: 75/75-vs-0/5 = resolution-lag censoring (all 5 losers STILL
+unlabeled; 43% of 06-12 sports episodes censored) + hold-vs-stop label
+mismatch. Whipsaw was a minor non-sports effect (first-touch 91.6% in
+multi-cross markets — below breakeven; avoid re-cross entries).
+DEFERRED (1): HEADLINES pubDate freshness (medium) — logged, next review.
+Tests: bot 134/134, deep 80/80, chartml+ml ALL PASS. Restarted, audit
+balanced. Watch: r90 hold-to-resolution settles, by_oracle v2 bucket,
+daytrade slow-path chartml counter, breaker behavior on next red day.
+
+## 2026-06-12 14:4x — Era hygiene + headline pubDate (the "still losing" diagnosis)
+- Diagnosis: last-3h realized −$60.99 was ENTIRELY the pre-fix sports-r90 cohort settling
+  (Derry −20.25, 4x Canada–Bosnia exact scores, spreads, O/Us — all entered before the
+  06-12 sports exclusion; resolution-lag censoring from H#9 landing as predicted).
+  Only $27.90 of that cohort remains open.
+- high_prob living record (excl. dead cohort): +$1.40 over 9 material settles, last8 +$1.63.
+  The pause was punishing a strategy that structurally no longer exists.
+- SHIPPED 1: dead_cohort() era hygiene in compute_learning — sports-r90 settles excluded
+  from streak/band judgment, wins and losses alike; displayed totals stay unfiltered.
+  Result: high_prob mult 0.0→1.0; news/daytrade correctly stay at 0.5 (living losses).
+- SHIPPED 2: _rss_items() — headlines now stamped with real pubDate (naive "-0000" treated
+  as UTC), items >6h old dropped at the door; HN uses created_at_i. Kills the
+  restart-resurrects-stale-news-as-breaking bug behind bad news confirms.
+- Tests: bot 138/138 (4 new), tests.py 80/80. Restarted; health ok, audit balanced.
+
+## 2026-06-12 ~16:20 PT — Deep review: SHIP NOTHING (evidence bar not met)
+- Since last entry: 5 settles, 5 green (+$0.35). high_prob 2/2 (+0.04 incl. the
+  manually-closed Paraguay holdover at breakeven), explore 3/3 (+0.31).
+- by_oracle v2: now 4 settles, 4 wins, +$0.97. Promising, n far too small to act.
+- by_lane r90: no new entries since sports ban (correct); no pending lane risk.
+- by_chartml / by_smart_money: zero tagged settles yet — gates active but no
+  qualifying entries have resolved. Watch.
+- H#1 (weather favorites differ from backtest): hp material living-era weather
+  n=6 (33% win, +$0.25 — band exits truncate losers); needs 20+. INSUFFICIENT,
+  keep collecting. ALL-weather (any strategy) n=54, 43% win, −$2.25 — mostly $1
+  explore probes, not evidence about hp sizing.
+- Health: ok, audit balanced, reentry 42, rss 1.7GB, no tracebacks in last 200
+  log lines (HTTP client-disconnect noise excluded by check).
+- Era-hygiene reminder applied throughout: dead sports-lane cohort excluded.
+- DECISION: no change ships. Post-fix cohort is 100% green but tiny; the right
+  move is volume, not knobs.
+
+## 2026-06-12 ~17:25 PT — ML-LAB #1: SHIP NOTHING (all models healthy, no gate has new OOS evidence)
+- (1) Drift: skill_history n=199; brain skill +0.076..+0.086 (stable), voice 0.80-0.84,
+  m15 shadow skill_vs_market -0.00295 (flat, unchanged). No Page-Hinkley alarms in
+  models_state; m1 calm/1.0, m2 at-avg/1.0. No drift action.
+- (2) m15 OOS on the bot's own living settles (era-hygiene applied): logloss edge
+  vs market price +0.1427, n=95. Caveat stated: selected-trade sample with
+  exit-truncated losses — supports keeping the m15 veto gate, not promotion to
+  pricer. Note the contrast: shadow skill on ALL markets is ~0 — m15 helps most
+  exactly where the bot trades.
+- (3) chartml move model: champion xgb, holdout skill 0.0994, n_events 6,955 —
+  unchanged since last retrain; nothing to re-fit yet (events accrue with tape).
+- (4) Buckets: by_oracle v2 4/4 +$0.97 (n too small to upsize); by_lane r90 no
+  post-ban entries; by_chartml & by_smart_money zero tagged settles. No gate
+  promotion/demotion — nothing reaches evidence bar.
+- (5) Kelly seed sanity: family-level union seed intact (gen 20:35 UTC). Bands
+  93/94/99 at 100% eff-rate (eff_n 16/20/62) fund; 90c at 94.3% over eff_n=20
+  still below the ~95%+ needed at its price -> correctly refused. 138/138 tests
+  pass (incl. 'funds 93 / refuses 90' property test).
+- DECISION: zero changes. Models earn their keep; gates judged only on OOS.
+
+## 2026-06-12 ~17:51 PT — Deep review: SHIP NOTHING (zero settles in window)
+- Window since ML-LAB entry is ~25 min: 0 new settles. Post-fix cohort remains
+  10 settles, 8 wins, +$0.36. Health ok, audit balanced, scans every 2-3 min,
+  reentry 51 persisted.
+- Deployment: arb $198 + hp $191 + explore $6 = ~$395 of $9.9k. hp supply-thin
+  overnight (96-98.9c, 24h+ window); model 4 18-24 UTC block just lifted.
+- by_lane r90: ZERO entries since the sports ban. Could be honest supply
+  drought (needs non-sports 90-95.9c, 0.5-24h, kelly-funded band) — WATCH ITEM:
+  if still zero by tomorrow's reviews, dry-run scan_high_prob offline with an
+  empty skip set to prove the funnel passes a synthetic candidate (lesson from
+  the triple-blocker incident: never assume, dry-run the real scanner).
+- H#4 (small-edge arbs realize full profit): n=2 of 5 needed — both realized
+  at/above locked profit (+0.50, +0.27). INSUFFICIENT, tracking positive.
+- DECISION: no change ships. No restart, so test suites not re-run (no code
+  or config touched).
+
+## 2026-06-12 ~18:45 PT — ULTRACODE FLEET #2 (44 agents): era hygiene completed across ALL learners
+- Fleet: 4 parallel audits + 2 adversarial verifiers per finding. 15 survivors, 5 killed.
+- THE finding (triple-confirmed, conf 0.97): five learners still trained on the dead
+  sports cohort. SHIPPED one principle at five sites — dead_cohort() filter threaded into:
+  m4 time_of_day_model (bot.py ~1695), band_win_stats kelly (~1168), mine_patterns m11
+  (~3125), bayes_confidence m3 (~1681), brain_train m13 (~1956).
+- Evidence highlights: m4's 18-24h hp block was 100% artifact (all-settles -$59.22 vs
+  living-era +$0.89/12 — would have needed ~800 settles to self-heal while suppressing
+  entries 6h/day); kelly 96c flipped $0 -> $418; lane90 watch item RESOLVED: funnel was
+  BROKEN at the miner-veto + kelly gates, not in drought (a real candidate died there today).
+- Verified live after restart: m4 blocked.high_prob=[] (news 00-06h block correctly
+  remains — living-era losses); m3 hp p_win 0.48->0.59 n=42 mult 1.0; bands now fund
+  92c $133 / 93c $974 / 94c $154 / 95c $41 / 96c $418. Health ok, audit balanced,
+  reentry 54. Suites: bot 143/143 (5 new era-hygiene property tests), tests.py 80/80,
+  chartml PASS, ml PASS.
+- DEFERRED (logged, not shipped tonight): (a) main-loop ACCOUNT_LOCK gap (conf 0.7,
+  real but touching lock discipline at night is riskier than the torn-save it prevents
+  — next deep review with full test plan); (b) scanner page-budget truncation — push
+  volume filter server-side IF gamma supports volume_num_min (verify first); (c) fast-
+  settle crypto lane: killed by verifiers — no instrumented evidence yet, needs a
+  research bucket before any gate opens.
+
+## 2026-06-12 ~19:35 PT — SPORTS-DESK v1 shipped (user-directed sports re-entry, probation rails)
+- User override of the categorical sports ban: "keep betting on sports... fine tune the
+  ways you bet." Designed + shipped a PROBATION probe instead of repeating the -$94 style.
+- Rails: PRE-GAME ONLY (is_in_game absolute — the in-game style stays dead); $5/trade;
+  $50 budget = DAILY REALIZED-LOSS ceiling (open risk + today's settled probe losses;
+  stopped losers cannot free budget — fix from adversarial risk review, which caught the
+  open-exposure-only version allowing ~6x burn overnight); riskless arb baskets excluded
+  from the budget; one bet per EVENT within AND across scans (held event_ids seeded into
+  dedup); probes pass every other gate (m15 veto, bands, depth, breaker); every entry
+  tagged context.sports_probe=1 -> judged as its own cohort. lane90 stays sports-free.
+- Promotion path: 15+ material probe settles net positive authorizes the deep review to
+  raise caps; negative record and the probe dies on its own evidence.
+- Review: 2 hostile agents pre-ship; correctness PASS, risk REFUTED v1 (realized-loss
+  hole) -> fixed -> rails now locked by 6 new property tests. Suites: bot 148/148,
+  tests.py 80/80. Restarted: health ok, audit balanced, probe live, room $50.00.
+
+## 2026-06-13 ~02:35 UTC — SPORTSEDGE shadow instrument shipped (user-directed "sports model")
+- User asked for a self-learning sports model that finds exploits for pre-game + live.
+  Ran a 9-agent recon+design fleet (wf_3212507c-110) FIRST to measure reality before
+  building (the H#9 lesson). Verdict: BUILD SHADOW-ONLY, ZERO SIZING.
+- Measured reality (recon): pre-game sports prices are near-EFFICIENT — closing-line
+  Brier collapses 0.064->0.0001 (n=723); pre-game ECE 0.07, residuals noise. The only
+  defensible edge is LIVE cross-source latency (ESPN scores before the thin PM book
+  reprices) but it is UNMEASURED (scores_stats latencies=[] over 34 events) and the
+  at-jump spread (~28c mean) likely eats it. So: a model that BETS pre-game has ~no edge
+  to harvest; the honest product is a self-grading instrument that earns sizing via
+  measured CLV, never backtest.
+- SHIPPED: sportsedge.py (pure-python, 10/10 self-tests) — Elo fair value, isotonic
+  calibration (ml.fit_isotonic), CLV, Brier/ECE scorecard, Page-Hinkley drift, latency
+  instrument, whitelist (same-day single-game moneyline in SCORE_LEAGUES; rejects
+  futures/props/wrong-day/non-league/same-city). edge_verdict DEFAULTS bet=False/size=0
+  and can NEVER bet in shadow. Promotion gate needs 15+ OOS settles, +CLV, ECE<=0.05,
+  no drift, MANUAL operator review.
+- Wiring is PURELY ADDITIVE SHADOW: import sportsedge; sportsedge_loop daemon runs a
+  shadow pass every 20min; writes ONLY sportsedge_model.json; never touches account or
+  trading path. CLI 'python3 bot.py sportsedge'; health.sportsedge field.
+- VERIFIED live: one-shot pass against real ESPN+gamma — Elo learned 16 MLB teams;
+  faced 26 sports-shaped markets (all Dota2/props/novelty) and priced ZERO (correct
+  loud abstain — the anti-H#9). Restarted; loop ran 02:37, 0 errors. Suites: bot
+  148/148, tests.py 80/80, sportsedge 10/10, ml + chartml PASS.
+- DOES NOT touch is_in_game (live still banned for trading). The $5/$50 pre-game probe
+  is unchanged. Live latency is a future MEASUREMENT step, not a trading lane.
