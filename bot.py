@@ -4440,10 +4440,13 @@ def trade_features(t):
     if side:
         f.append("side=" + ("no" if side.startswith("no") else "yes"))
     f.append(f"px={int(round((t.get('entry_price') or 0) * 20)) * 5}")  # 5c buckets
-    try:
-        f.append(f"hour={int(t['closed'][11:13]) // 6 * 6:02d}")
-    except (KeyError, ValueError, IndexError):
-        pass
+    # NO `closed`-derived trait here: `closed` is the market RESOLUTION timestamp
+    # during training but the CURRENT time during live mining/veto/pat checks, so
+    # the settlement hour is unknown at entry. A former `hour=` bucket leaked that
+    # future data into the mined patterns -> pat* brain features (brain_adjust) and
+    # entry vetoes (pattern_veto), both of which recompute traits from a probe with
+    # closed=now. Removed for the same reason as the _brain_x night/imb_x_night
+    # leak (commit 45fa2ae). Every remaining trait is point-in-time (known at entry).
     if ctx.get("spread") is not None:
         f.append("spread=" + ("wide" if ctx["spread"] > 0.02 else "tight"))
     if ctx.get("imbalance") is not None:
