@@ -1912,7 +1912,9 @@ BRAIN_FACTORS = {"nsent": "headline sentiment",
                  "imb": "buyer-stacked book", "mom": "recent momentum",
                  "ttr": "longer to resolution", "move": "big 1h move",
                  "night": "overnight entry", "no_side": "betting No",
-                 "news": "news strategy", "explore": "explorer trade"}
+                 "news": "news strategy", "explore": "explorer trade",
+                 "w_fcstrike": "forecast vs strike", "w_spread": "ensemble spread",
+                 "w_agree": "ensemble agreement"}
 
 
 # Per-category SPORTS feature keys added to _brain_x. They default to EXACTLY
@@ -1932,10 +1934,17 @@ SPORTS_X_KEYS = ("sb_cons", "elo_fv", "sb_div", "gpost")
 # specialist they are a pure no-op.
 CRYPTO_X_KEYS = ("c_spotdist", "c_rvol", "c_spread")
 
+# Per-category WEATHER feature keys — same partial-pooling contract: they default
+# EXACTLY 0.0 on the common path and are STRIPPED from the global model's view
+# (_global_x), so they survive ONLY in the weather specialist and the
+# global/common path is byte-identical. Absent an OOS-earned weather specialist
+# they are a pure no-op.
+WEATHER_X_KEYS = ("w_fcstrike", "w_spread", "w_agree")
+
 # All per-category keys the global model must never see. The global logistic,
 # zoo (GBM/XGB/forest) and MLP train and predict on exactly the dimensions they
 # did before any category feature existed (byte-identical common path).
-_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS
+_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS + WEATHER_X_KEYS
 
 
 def _global_x(x):
@@ -2029,6 +2038,24 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         # near 0 and a thin/illiquid one saturates toward 1.0.
         "c_spread": max(0.0, min(1.0, (ctx.get("crypto_spread_bps") or 0.0)
                                  / 50.0)),
+        # PER-CATEGORY WEATHER features. ALL DEFAULT EXACTLY NEUTRAL (0.0) when the
+        # weather context is absent — i.e. every non-weather market and every
+        # weather market we cannot parse to a city/strike — so the global/common
+        # path is unchanged and the golden regression fixtures are byte-identical.
+        # These fire only for weather markets carrying wx_* context, and only the
+        # OOS-gated weather specialist ever weights them. All point-in-time (see
+        # weather_features): Open-Meteo ensemble + weather.gov/NWS forecasts
+        # issued AS OF NOW — no future observation, just forecast agreement.
+        # w_fcstrike: signed (forecast_mean - strike)/(hist_err+0.5), capped to
+        # the spec range [-3,3]. Positive => ensemble runs hotter than the strike.
+        "w_fcstrike": max(-3.0, min(3.0, ctx.get("wx_fc_strike") or 0.0)),
+        # w_spread: ensemble disagreement (member stdev) / 2.5, capped [0,1.5];
+        # higher spread = lower forecast confidence (per spec).
+        "w_spread": max(0.0, min(1.5, (ctx.get("wx_fc_spread") or 0.0) / 2.5)),
+        # w_agree: fraction of ensemble members on the market's side, [0,1];
+        # neutral 0.0 when absent (no direction / no ensemble). 0.5 is "coin
+        # flip" and a real consensus pulls toward 0 or 1.
+        "w_agree": max(0.0, min(1.0, ctx.get("wx_model_agree") or 0.0)),
     } | (lambda cl: {
         "cl_weather": 1.0 if cl == "weather" else 0.0,
         "cl_sports": 1.0 if cl == "sports-game" else 0.0,
@@ -3065,6 +3092,213 @@ def crypto_features(m, price):
             spot = _crypto_spot(sym)
             if spot and spot > 0:
                 out["crypto_spot_dist"] = (spot - pt[1]) / pt[1]
+    except Exception:
+        pass
+    return out
+
+
+# --------------------------------------------- per-category WEATHER feature read
+# Two free, keyless sources combine into a point-in-time ensemble read for the
+# weather specialist:
+#   * Open-Meteo ENSEMBLE API (api.open-meteo.com/v1/ensemble) — ~30 GFS members,
+#     daily 2m-max/min per member. The disagreement ACROSS members is the
+#     forecast uncertainty; the fraction of members on the market's side is the
+#     consensus. No key required. An optional OPENMETEO_API_KEY (paid tier, higher
+#     rate limits) is read from os.environ and appended when present; absent, the
+#     free endpoint is used and nothing is gated off.
+#   * weather.gov / NWS (api.weather.gov) — official US point forecast, used as a
+#     fail-silent cross-check / mean source when Open-Meteo blips. Keyless; NWS
+#     only requires a User-Agent, which `session` already sets globally.
+# Every read is a snapshot AS OF NOW, governed, timeout-bounded and cached; a
+# dead source yields None (feature -> neutral), never an exception or a stall.
+def _wx_strike_c(question):
+    """Extract the market's temperature threshold in CELSIUS (the forecast's
+    native unit) from any of the three weather-market shapes, so the ensemble
+    forecast and the strike live in the same units. Returns the strike in °C,
+    or None when the question is not a parseable temperature market. For range
+    markets the midpoint is used. Point-in-time: parsed from the question text
+    already on the market, never fetched."""
+    m = _WX_RX.search(question or "")
+    if m:
+        thr = float(m.group(3))
+        is_f = (m.group(4) or "C").upper() == "F"
+        return (thr - 32) * 5 / 9 if is_f else thr
+    m = _WX_RANGE_RX.search(question or "")
+    if m:
+        lo, hi = float(m.group(3)), float(m.group(4))
+        is_f = m.group(5).upper() == "F"
+        mid = (lo + hi) / 2.0
+        return (mid - 32) * 5 / 9 if is_f else mid
+    m = _WX_EXACT_RX.search(question or "")
+    if m:
+        pin = float(m.group(3))
+        is_f = m.group(4).upper() == "F"
+        return (pin - 32) * 5 / 9 if is_f else pin
+    return None
+
+
+def _wx_strike_side(question):
+    """Return +1 if the event is 'forecast >= strike' (above/higher), -1 if it
+    is 'below/lower', 0 for range/exact (no single direction). Used to count the
+    fraction of ensemble members on the market's side. Point-in-time (question
+    text only)."""
+    m = _WX_RX.search(question or "")
+    if m:
+        return 1 if m.group(5).lower() in ("above", "higher") else -1
+    return 0
+
+
+def _wx_geocode(city):
+    """City -> (lat, lon) via Open-Meteo's free keyless geocoder. Cached 24h,
+    fail-silent (None on any error). Point-in-time: a static lookup, no forward
+    data."""
+    def fetch():
+        g = get_json("https://geocoding-api.open-meteo.com/v1/search",
+                     params={"name": city, "count": 1}) or {}
+        res = (g.get("results") or [{}])[0]
+        lat, lon = res.get("latitude"), res.get("longitude")
+        if lat is None or lon is None:
+            return None
+        return (lat, lon)
+    return _cached(("wxgeo", (city or "").lower()), 86400, fetch)
+
+
+def _openmeteo_ensemble(lat, lon, date_str, kind="max"):
+    """~30-member GFS ensemble daily max/min temperature (°C) for one day from
+    Open-Meteo's free ensemble API. Returns a list of per-member values, or []
+    when unavailable. Cached 15 min, governed, fail-silent. POINT-IN-TIME: the
+    forecast is the model run available AS OF the request; we read the target
+    DAY's daily field per member — no future observation, just disagreement
+    across today's ensemble members. An optional OPENMETEO_API_KEY (paid tier)
+    is read from os.environ and forwarded when present; absent, the keyless
+    endpoint is used and the source is never gated off."""
+    def fetch():
+        var = "temperature_2m_max" if kind == "max" else "temperature_2m_min"
+        params = {"latitude": lat, "longitude": lon, "daily": var,
+                  "models": "gfs_seamless", "timezone": "auto",
+                  "forecast_days": 5}
+        key = os.environ.get("OPENMETEO_API_KEY")
+        if key:
+            params["apikey"] = key
+        f = get_json("https://ensemble-api.open-meteo.com/v1/ensemble",
+                     params=params) or {}
+        d = f.get("daily") or {}
+        times = d.get("time") or []
+        if date_str not in times:
+            return []
+        idx = times.index(date_str)
+        # each member is its own daily series keyed e.g. temperature_2m_max_member01
+        members = []
+        for k, series in d.items():
+            if not k.startswith(var):
+                continue
+            try:
+                v = series[idx]
+            except (IndexError, TypeError):
+                continue
+            if v is not None:
+                members.append(float(v))
+        return members
+    return _cached(("wxens", round(lat, 2), round(lon, 2), date_str, kind),
+                   900, fetch) or []
+
+
+def _nws_point_forecast(lat, lon, date_str, kind="max"):
+    """weather.gov / NWS official daily max/min (°C) for a US point, used as a
+    fail-silent cross-check / mean source when the ensemble is unavailable.
+    Keyless (NWS only needs the User-Agent `session` already sends). Cached 1h,
+    governed, fail-silent (None outside the US or on any error). POINT-IN-TIME:
+    a forecast issued AS OF NOW, never a future observation."""
+    def fetch():
+        pts = get_json(f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}") or {}
+        url = ((pts.get("properties") or {}).get("forecast"))
+        if not url:
+            return None
+        fc = get_json(url) or {}
+        best = None
+        for p in (fc.get("properties") or {}).get("periods", []):
+            start = (p.get("startTime") or "")[:10]
+            if start != date_str:
+                continue
+            t = p.get("temperature")
+            unit = (p.get("temperatureUnit") or "F").upper()
+            is_day = p.get("isDaytime", True)
+            if t is None:
+                continue
+            tc = (t - 32) * 5 / 9 if unit == "F" else float(t)
+            # daytime high -> max; nighttime low -> min
+            if kind == "max" and is_day:
+                best = tc if best is None else max(best, tc)
+            elif kind == "min" and not is_day:
+                best = tc if best is None else min(best, tc)
+        return best
+    return _cached(("wxnws", round(lat, 4), round(lon, 4), date_str, kind),
+                   3600, fetch)
+
+
+# Per-city rolling forecast-error scale (°C). Seeded with a conservative
+# climatological day-ahead RMSE for daily 2m temperature so the normalization
+# denominator is never zero on the first read; the +0.5 floor in the feature
+# keeps it finite regardless. Static constant -> no future data.
+_WX_HIST_ERR_C = 1.8
+
+
+def weather_features(m, price):
+    """Point-in-time weather feature read for one market, attached to the entry
+    context of WEATHER markets only. ALL fields default neutral (None) so a
+    non-weather market — or a weather market we cannot parse to a city/strike —
+    leaves _brain_x's weather features at EXACTLY 0.0 and the global/common path
+    byte-identical.
+
+      wx_fc_strike:  normalized distance between the ensemble forecast MEAN and
+                     the market strike, (forecast_mean - strike) / (hist_err+0.5)
+                     in °C. Captures market mispricing vs the objective forecast.
+                     None when the ensemble (and NWS fallback) are unavailable.
+      wx_fc_spread:  ensemble disagreement = stdev of member forecasts (°C). A
+                     wider spread = lower forecast confidence. None when <3
+                     members are available.
+      wx_model_agree: fraction of ensemble members landing on the market's side
+                     of the strike (above/higher vs below/lower). None for range
+                     / exact markets that have no single direction, or when no
+                     ensemble is available.
+
+    Open-Meteo ensemble first (mean + spread + agreement); weather.gov/NWS is a
+    fail-silent fallback for the mean only. Governed, cached, fail-silent: a dead
+    source yields None, never an exception or a stall. No future data: every read
+    is a snapshot of forecasts issued AS OF NOW (see crypto/oracle headers)."""
+    out = {"wx_fc_strike": None, "wx_fc_spread": None, "wx_model_agree": None}
+    try:
+        q = m.get("question") or ""
+        parsed = _wx_parse(q)
+        strike_c = _wx_strike_c(q)
+        if not parsed or strike_c is None:
+            return out
+        kind, city, _ev = parsed
+        geo = _wx_geocode(city)
+        if not geo:
+            return out
+        lat, lon = geo
+        # resolve the target day from the question's date when present, else the
+        # market end; the forecast table is keyed by ISO date (point-in-time).
+        end = m.get("endDate") or m.get("end_date") or ""
+        date_str = (end or now_utc().isoformat())[:10]
+        members = _openmeteo_ensemble(lat, lon, date_str, kind)
+        fc_mean = None
+        if len(members) >= 3:
+            fc_mean = sum(members) / len(members)
+            mu = fc_mean
+            sd = (sum((v - mu) ** 2 for v in members) / len(members)) ** 0.5
+            out["wx_fc_spread"] = sd
+            side = _wx_strike_side(q)
+            if side != 0:
+                on_side = sum(1 for v in members
+                              if (v >= strike_c) == (side > 0))
+                # fraction on the CORRECT side per the market's direction
+                out["wx_model_agree"] = on_side / len(members)
+        if fc_mean is None:
+            fc_mean = _nws_point_forecast(lat, lon, date_str, kind)
+        if fc_mean is not None:
+            out["wx_fc_strike"] = (fc_mean - strike_c) / (_WX_HIST_ERR_C + 0.5)
     except Exception:
         pass
     return out
@@ -4380,6 +4614,9 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         is_crypto = (cat_key(category) == "crypto"
                      or cluster_of(q_full) == "crypto-price"
                      or any(w in q_full.lower() for w in _CRYPTO_IDS))
+        is_weather = (cat_key(category) == "weather"
+                      or cluster_of(q_full) == "weather"
+                      or _wx_parse(q_full) is not None)
         sports_probe = False
         if is_sport and use_kelly:
             # sports only trade through the probation probe (see
@@ -4429,6 +4666,15 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         cf = (crypto_features(m, price) if is_crypto
               else {"crypto_spot_dist": None, "crypto_rvol_h": None,
                     "crypto_spread_bps": None})
+        # PER-CATEGORY WEATHER feature read (point-in-time, fail-silent). Only for
+        # weather markets; for everything else wf_x stays the all-None neutral that
+        # leaves _brain_x's weather features at 0.0 and the global path unchanged.
+        # Reads the Open-Meteo ~30-member ensemble (mean distance from strike,
+        # spread, side-agreement) + weather.gov/NWS fallback mean. No future data:
+        # see weather_features docstring.
+        wf_x = (weather_features(m, price) if is_weather
+                else {"wx_fc_strike": None, "wx_fc_spread": None,
+                      "wx_model_agree": None})
         exit_keys = {}
         if strategy == "explore":
             # NO stop: a $1 stake is its own insurance (max loss = cost), and
@@ -4523,6 +4769,12 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                         "crypto_spot_dist": cf["crypto_spot_dist"],
                         "crypto_rvol_h": cf["crypto_rvol_h"],
                         "crypto_spread_bps": cf["crypto_spread_bps"],
+                        # per-category WEATHER features (point-in-time; all None
+                        # for non-weather markets -> _brain_x neutral 0.0 -> the
+                        # weather specialist learns them, global path unchanged).
+                        "wx_fc_strike": wf_x["wx_fc_strike"],
+                        "wx_fc_spread": wf_x["wx_fc_spread"],
+                        "wx_model_agree": wf_x["wx_model_agree"],
                         "sports_probe": 1 if sports_probe else None},
             "name": m["question"],
             "legs": [{"market_id": str(m["id"]), "question": m["question"],
@@ -6343,6 +6595,125 @@ def self_test():
                for m in (bt_cp.get("specialists") or {}).values()
                for k in CRYPTO_X_KEYS))
 
+    # ---- WEATHER PER-CATEGORY FEATURE REGRESSION + LEAKAGE GUARD -------------
+    # The weave adds wx_* features (forecast-vs-strike distance, ensemble spread,
+    # ensemble side-agreement) to _brain_x + a weather-only entry-context hook
+    # (Open-Meteo ensemble + weather.gov/NWS). HARD RULE: on the COMMON path
+    # (non-weather market / no weather signal -> wx ctx None) the model is
+    # IDENTICAL to before. We prove neutrality, the explicit-None==absent
+    # sentinel, signed/scaled/capped values, and point-in-time leakage safety.
+    wx_plain = _brain_x("news", 0.6, base_ctx, "Yes")
+    ok("weather features default neutral (0.0) with no weather ctx",
+       wx_plain.get("w_fcstrike") == 0.0 and wx_plain.get("w_spread") == 0.0
+       and wx_plain.get("w_agree") == 0.0)
+    # explicit None weather fields read identically to their absence (common path)
+    wx_none = _brain_x("news", 0.6, dict(base_ctx, wx_fc_strike=None,
+                                         wx_fc_spread=None,
+                                         wx_model_agree=None), "Yes")
+    ok("weather: explicit None == absent (common path byte-identical)",
+       wx_none == wx_plain)
+    # forecast-vs-strike signs and caps: forecast hotter than strike -> positive,
+    # capped to the spec range [-3, 3]
+    wx_d = _brain_x("news", 0.6, dict(base_ctx, wx_fc_strike=1.2), "Yes")
+    ok("weather: forecast-vs-strike signs and caps (fc>strike -> +, |.|<=3)",
+       0 < wx_d["w_fcstrike"] <= 3.0
+       and _brain_x("news", 0.6, dict(base_ctx, wx_fc_strike=9.0),
+                    "Yes")["w_fcstrike"] == 3.0
+       and _brain_x("news", 0.6, dict(base_ctx, wx_fc_strike=-9.0),
+                    "Yes")["w_fcstrike"] == -3.0)
+    # spread non-negative, saturates at 1.5; agreement non-negative, saturates 1.0
+    wx_s = _brain_x("news", 0.6, dict(base_ctx, wx_fc_spread=1.0,
+                                      wx_model_agree=0.7), "Yes")
+    ok("weather: spread/agreement non-negative and saturate [0,1.5]/[0,1]",
+       0 < wx_s["w_spread"] <= 1.5 and 0 < wx_s["w_agree"] <= 1.0
+       and _brain_x("news", 0.6, dict(base_ctx, wx_fc_spread=10.0),
+                    "Yes")["w_spread"] == 1.5
+       and _brain_x("news", 0.6, dict(base_ctx, wx_model_agree=2.0),
+                    "Yes")["w_agree"] == 1.0)
+    # brain_adjust byte-identical with weather ctx absent vs explicit None
+    BRAIN.update(bt)
+    wa_absent = brain_adjust("news", 0.6, base_ctx, "Yes")
+    wa_none = brain_adjust("news", 0.6, dict(base_ctx, wx_fc_strike=None,
+                                             wx_fc_spread=None,
+                                             wx_model_agree=None), "Yes")
+    ok("weather: brain_adjust identical when weather ctx absent vs None",
+       wa_absent == wa_none)
+    BRAIN.update(saved_brain)
+    # weather features stay weight ~0 when never present in training (inert)
+    ok("weather: feature weights ~0 when signal never present",
+       abs((bt_a.get("w") or {}).get("w_fcstrike", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("w_spread", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("w_agree", 0.0)) < 1e-6)
+    # LEAKAGE: weather_features is point-in-time + fail-silent. A market we cannot
+    # parse to a weather city/strike yields the all-neutral dict (never an
+    # exception, never a network call) -> deterministic no-network proof.
+    _wf_none = weather_features({"question": "Will Bitcoin be above $66,000?"},
+                                0.6)
+    ok("weather: fail-silent neutral on a non-weather market (no city/strike)",
+       all(_wf_none[k] is None for k in
+           ("wx_fc_strike", "wx_fc_spread", "wx_model_agree")))
+    # strike parsing is point-in-time (question text only) and unit-correct: an
+    # °F strike is converted to the forecast's native °C, no network call.
+    ok("weather: strike parses to Celsius (point-in-time, °F->°C)",
+       abs(_wx_strike_c("Will the highest temperature in Austin be 50 °F or "
+                        "above on June 12?") - 10.0) < 1e-6
+       and abs(_wx_strike_c("Will the highest temperature in Tokyo be 19 °C or "
+                            "above on June 12?") - 19.0) < 1e-6
+       and _wx_strike_c("Lakers vs. Celtics") is None)
+    # side parsing: 'above/higher' -> +1, 'below/lower' -> -1, range/exact -> 0.
+    ok("weather: strike side signs (above->+1, below->-1, range->0)",
+       _wx_strike_side("highest temperature in NYC be 80 °F or above") == 1
+       and _wx_strike_side("lowest temperature in NYC be 50 °F or below") == -1
+       and _wx_strike_side("highest temperature in NYC be between 80-82 °F")
+       == 0)
+    # the ensemble read is point-in-time: stubbed daily members yield mean/spread/
+    # agreement deterministically, and a non-target date yields [] (no leak).
+    ORACLE_CACHE.pop(("wxens", round(40.71, 2), round(-74.0, 2),
+                      "2026-06-12", "max"), None)
+    _real_get = globals()["get_json"]
+    try:
+        globals()["get_json"] = lambda *a, **k: {"daily": {
+            "time": ["2026-06-12"],
+            "temperature_2m_max_member01": [20.0],
+            "temperature_2m_max_member02": [22.0],
+            "temperature_2m_max_member03": [24.0]}}
+        mem = _openmeteo_ensemble(40.71, -74.0, "2026-06-12", "max")
+        ok("weather: ensemble reads per-member daily values (point-in-time)",
+           sorted(mem) == [20.0, 22.0, 24.0])
+        ORACLE_CACHE.pop(("wxens", round(40.71, 2), round(-74.0, 2),
+                          "2026-06-99", "max"), None)
+        ok("weather: ensemble empty on a non-target date (no future leak)",
+           _openmeteo_ensemble(40.71, -74.0, "2026-06-99", "max") == [])
+    finally:
+        globals()["get_json"] = _real_get
+        ORACLE_CACHE.pop(("wxens", round(40.71, 2), round(-74.0, 2),
+                          "2026-06-12", "max"), None)
+    # END-TO-END WIRING: a weather category whose outcome is driven by the
+    # forecast-vs-strike feature forms a specialist that ACTUALLY WEIGHTS the
+    # weather keys, while the GLOBAL model never sees them (its w/specialists are
+    # strictly the pre-weather feature space). Proves the feature is learned by
+    # the right learner and isolated from the global one.
+    weather_fix = {"settled": [
+        {"strategy": "news", "pnl": (1.0 if i % 2 == 0 else -1.0),
+         "entry_price": 0.5, "side": "Yes", "category": "Weather",
+         "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+         "name": "Will the highest temperature in Austin be 30 °C or above #%d"
+                 % i,
+         "context": {"imbalance": 0.5, "spread": 0.01, "hours_to_end": 12,
+                     # forecast far above strike on winners, below on losers:
+                     "wx_fc_strike": (1.5 if i % 2 == 0 else -1.5),
+                     "wx_fc_spread": 1.0, "wx_model_agree": 0.8}}
+        for i in range(60)]}
+    bt_wx = brain_train(weather_fix)
+    wp = (bt_wx.get("cat_specialists") or {}).get("weather") or {}
+    ok("weather: specialist learns the forecast-vs-strike key (w_fcstrike!=0)",
+       abs((wp.get("w") or {}).get("w_fcstrike", 0.0)) > 1e-3)
+    ok("weather: GLOBAL model carries NO weather keys (feature space isolated)",
+       all(k not in (bt_wx.get("w") or {}) for k in WEATHER_X_KEYS)
+       and all(k not in (m or {})
+               for m in (bt_wx.get("specialists") or {}).values()
+               for k in WEATHER_X_KEYS))
+
     # ===== PER-CATEGORY BRAIN SPECIALIST LAYER (partial pooling, OOS-gated) ===
     # The hard rule, tightened: the GLOBAL model must be byte-identical AFTER
     # adding the category layer, proven on a FIXED MIXED-CATEGORY dataset (not
@@ -6911,6 +7282,15 @@ def attribution(account):
                             else ("spot>strike" if ctx(t)["crypto_spot_dist"] > 0.005
                                   else "spot<strike" if ctx(t)["crypto_spot_dist"] < -0.005
                                   else "at-strike")),
+        # WEATHER specialist attribution: how trades fared by where the ensemble
+        # forecast mean sat relative to the market strike. None for every
+        # non-weather trade (no wx_fc_strike context) so the bucket stays scoped
+        # to the weather category.
+        "by_weather": bucket(rows, lambda t: None
+                             if ctx(t).get("wx_fc_strike") is None
+                             else ("forecast>strike" if ctx(t)["wx_fc_strike"] > 0.1
+                                   else "forecast<strike" if ctx(t)["wx_fc_strike"] < -0.1
+                                   else "at-strike")),
         "by_sentiment": bucket(rows, lambda t: None if ctx(t).get("news_sent") is None
                                else ("pos" if ctx(t)["news_sent"] > 0
                                      else "neg" if ctx(t)["news_sent"] < 0 else "neutral")),
