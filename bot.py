@@ -1941,10 +1941,17 @@ CRYPTO_X_KEYS = ("c_spotdist", "c_rvol", "c_spread")
 # they are a pure no-op.
 WEATHER_X_KEYS = ("w_fcstrike", "w_spread", "w_agree")
 
+# Per-category MACRO feature keys — same partial-pooling contract: they default
+# EXACTLY 0.0 on the common path and are STRIPPED from the global model's view
+# (_global_x), so they survive ONLY in the macro specialist and the
+# global/common path is byte-identical. Absent an OOS-earned macro specialist
+# they are a pure no-op.
+MACRO_X_KEYS = ("m_ratedev", "m_cpisurp", "m_yieldsig")
+
 # All per-category keys the global model must never see. The global logistic,
 # zoo (GBM/XGB/forest) and MLP train and predict on exactly the dimensions they
 # did before any category feature existed (byte-identical common path).
-_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS + WEATHER_X_KEYS
+_CAT_X_KEYS = SPORTS_X_KEYS + CRYPTO_X_KEYS + WEATHER_X_KEYS + MACRO_X_KEYS
 
 
 def _global_x(x):
@@ -2056,6 +2063,29 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         # neutral 0.0 when absent (no direction / no ensemble). 0.5 is "coin
         # flip" and a real consensus pulls toward 0 or 1.
         "w_agree": max(0.0, min(1.0, ctx.get("wx_model_agree") or 0.0)),
+        # PER-CATEGORY MACRO features. ALL DEFAULT EXACTLY NEUTRAL (0.0) when the
+        # macro context is absent — i.e. every non-macro market and every macro
+        # market we cannot map to a FRED series — so the global/common path is
+        # unchanged and the golden regression fixtures are byte-identical. These
+        # fire only for macro markets carrying macro_* context, and only the
+        # OOS-gated macro specialist ever weights them. All point-in-time (see
+        # macro_features): FRED observations publish with a lag (CPI ~12 days,
+        # DFF ~1 day), market expectations are today's consensus and the yield
+        # curve is live Treasury prices — every read a snapshot AS OF NOW, no
+        # future observation or forecast.
+        # m_ratedev: market's expected Fed rate minus the latest DFF observation,
+        # scaled to [-1.5, 1.5]. Positive => market prices rates above the
+        # current funds rate (hawkish expectation divergence).
+        "m_ratedev": max(-1.5, min(1.5, ctx.get("macro_rate_dev") or 0.0)),
+        # m_cpisurp: YoY CPI change vs consensus forecast, normalized by a 0.5%
+        # basis and clipped to [-1.5, 1.5]. Positive => inflation ran hotter than
+        # consensus (upside inflation surprise).
+        "m_cpisurp": max(-1.5, min(1.5,
+                         (ctx.get("macro_cpi_surprise") or 0.0) / 0.5)),
+        # m_yieldsig: 10Y-2Y spread regime — -1.0 inverted (recession risk),
+        # -0.5 flat, 0.0 normal, 0.5 steep growth. Already a discrete regime
+        # code; passed through, clipped to its declared [-1.0, 0.5] band.
+        "m_yieldsig": max(-1.0, min(0.5, ctx.get("macro_yield_signal") or 0.0)),
     } | (lambda cl: {
         "cl_weather": 1.0 if cl == "weather" else 0.0,
         "cl_sports": 1.0 if cl == "sports-game" else 0.0,
@@ -3299,6 +3329,146 @@ def weather_features(m, price):
             fc_mean = _nws_point_forecast(lat, lon, date_str, kind)
         if fc_mean is not None:
             out["wx_fc_strike"] = (fc_mean - strike_c) / (_WX_HIST_ERR_C + 0.5)
+    except Exception:
+        pass
+    return out
+
+
+# --------------------------------------------------------------- MACRO ------
+# Per-category MACRO features for the macro specialist. SOURCE:
+#   * FRED (Federal Reserve Economic Data, api.stlouisfed.org) — official daily/
+#     monthly series. KEY-GATED: a FRED_API_KEY is read from os.environ and
+#     appended when present; absent, the source is skipped SILENTLY (every FRED
+#     read returns None -> feature stays neutral 0.0 -> global path unchanged).
+# POINT-IN-TIME / NO LEAKAGE: FRED observations publish with a real-world lag
+# (CPI ~12 days after month-end, DFF ~1 day after the observation date), so the
+# LATEST available observation AS OF NOW carries no forward knowledge. The
+# market's rate/CPI expectation is today's price/consensus, not a future
+# forecast. The 10Y-2Y spread is the latest published Treasury constant-maturity
+# yields. Every read is governed, timeout-bounded, cached and fail-silent; a dead
+# or key-less source yields None (never an exception or a stall).
+_FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+
+# Markets whose subject is a macro/FRED series. Point-in-time: matched on the
+# question text already on the market, never fetched.
+_MACRO_RATE_RX = re.compile(
+    r"\b(fed(eral)?\s+(funds|reserve)|interest\s+rate|rate\s+(hike|cut|"
+    r"decision)|fomc|basis\s*points?|bps)\b", re.I)
+_MACRO_CPI_RX = re.compile(r"\b(cpi|inflation|consumer\s+price)\b", re.I)
+_MACRO_YIELD_RX = re.compile(
+    r"\b(yield\s+curve|recession|10y|2y|treasur(y|ies)|10-?year|2-?year)\b",
+    re.I)
+# A market-implied rate target in the question, e.g. "above 4.5%" / "4.50 percent".
+_MACRO_RATE_TARGET_RX = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", re.I)
+
+
+def _fred_latest(series_id, limit=1):
+    """The most-recent `limit` published observations of a FRED series, newest
+    first, as a list of (date, float) — or [] when the source is unavailable.
+    KEY-GATED (FRED_API_KEY from os.environ; absent -> [] silently). Governed,
+    timeout-bounded, fail-silent, cached 1h. POINT-IN-TIME: sort_order=desc with
+    no realtime override returns only observations already PUBLISHED as of now;
+    FRED never surfaces a future-dated value here, so no forward leak."""
+    def fetch():
+        key = os.environ.get("FRED_API_KEY")
+        if not key:                      # key-gated: skip silently when absent
+            return []
+        g = get_json(_FRED_BASE, params={
+            "series_id": series_id, "api_key": key, "file_type": "json",
+            "sort_order": "desc", "limit": limit}) or {}
+        out = []
+        for o in (g.get("observations") or []):
+            v = o.get("value")
+            if v in (None, ".", ""):     # FRED marks missing values as "."
+                continue
+            try:
+                out.append((o.get("date"), float(v)))
+            except (TypeError, ValueError):
+                continue
+        return out
+    return _cached(("fred", series_id, limit), 3600, fetch) or []
+
+
+def _fred_value(series_id):
+    """Latest single published value of a FRED series, or None (fail-silent /
+    key-less). Point-in-time: the newest observation already published."""
+    obs = _fred_latest(series_id, 1)
+    return obs[0][1] if obs else None
+
+
+def _macro_rate_target(question):
+    """The market-implied Fed-rate target (in %) parsed from the question text,
+    or None. Point-in-time: question text only, never fetched. Used as today's
+    rate EXPECTATION for the deviation feature (a contemporaneous consensus, not
+    a forward forecast)."""
+    m = _MACRO_RATE_TARGET_RX.search(question or "")
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def macro_features(m, price):
+    """Point-in-time macro feature read for one market, attached to the entry
+    context of MACRO markets only. ALL fields default neutral (None) so a
+    non-macro market — or a macro market we cannot map to a FRED series — leaves
+    _brain_x's macro features at EXACTLY 0.0 and the global/common path
+    byte-identical.
+
+      macro_rate_dev:    the market's expected Fed rate (parsed % target) minus
+                         the latest DFF (Federal Funds Rate) observation, scaled
+                         to [-1.5, 1.5]. Captures rate-expectation divergence.
+                         None when no rate target is in the question or DFF is
+                         unavailable (key-less FRED).
+      macro_cpi_surprise: YoY CPI change vs consensus forecast (decimal pct
+                         points; +0.3 == CPI ran 0.3pp hot). Normalized later by
+                         _brain_x's 0.5% basis. None when CPI/consensus is
+                         unavailable. (Consensus is the contemporaneous market /
+                         survey value carried on the market, never a future read.)
+      macro_yield_signal: 10Y-2Y spread regime — -1.0 inverted (recession risk),
+                         -0.5 flat, 0.0 normal, 0.5 steep growth. From the latest
+                         published Treasury constant-maturity yields (DGS10,
+                         DGS2). None when the spread is unavailable.
+
+    KEY-GATED (FRED_API_KEY): absent, every FRED read returns None and all three
+    fields stay neutral. Governed, cached, fail-silent: a dead source yields None,
+    never an exception or a stall. No future data — see the MACRO header."""
+    out = {"macro_rate_dev": None, "macro_cpi_surprise": None,
+           "macro_yield_signal": None}
+    try:
+        q = m.get("question") or ""
+        # (1) rate deviation: market-implied target vs latest DFF observation.
+        if _MACRO_RATE_RX.search(q):
+            target = _macro_rate_target(q)
+            dff = _fred_value("DFF")           # Federal Funds Rate (daily, %)
+            if target is not None and dff is not None:
+                out["macro_rate_dev"] = target - dff
+        # (2) CPI surprise: YoY CPI vs a contemporaneous consensus carried on the
+        #     market (point-in-time; never a forward forecast). The consensus is
+        #     read from the market when present; absent, the feature stays None.
+        if _MACRO_CPI_RX.search(q):
+            consensus = m.get("cpi_consensus_yoy")
+            cpi_yoy = _fred_value("CPIAUCSL_YOY") if consensus is not None \
+                else None
+            if cpi_yoy is not None and consensus is not None:
+                out["macro_cpi_surprise"] = cpi_yoy - consensus
+        # (3) yield-curve regime from the latest published 10Y/2Y yields.
+        if _MACRO_YIELD_RX.search(q) or _MACRO_RATE_RX.search(q):
+            y10 = _fred_value("DGS10")
+            y2 = _fred_value("DGS2")
+            if y10 is not None and y2 is not None:
+                spread = y10 - y2
+                if spread < -0.10:
+                    out["macro_yield_signal"] = -1.0   # inverted (recession)
+                elif spread < 0.25:
+                    out["macro_yield_signal"] = -0.5   # flat
+                elif spread < 1.00:
+                    out["macro_yield_signal"] = 0.0    # normal
+                else:
+                    out["macro_yield_signal"] = 0.5    # steep growth
     except Exception:
         pass
     return out
@@ -4617,6 +4787,10 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         is_weather = (cat_key(category) == "weather"
                       or cluster_of(q_full) == "weather"
                       or _wx_parse(q_full) is not None)
+        is_macro = (cat_key(category) == "macro"
+                    or bool(_MACRO_RATE_RX.search(q_full))
+                    or bool(_MACRO_CPI_RX.search(q_full))
+                    or bool(_MACRO_YIELD_RX.search(q_full)))
         sports_probe = False
         if is_sport and use_kelly:
             # sports only trade through the probation probe (see
@@ -4675,6 +4849,15 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         wf_x = (weather_features(m, price) if is_weather
                 else {"wx_fc_strike": None, "wx_fc_spread": None,
                       "wx_model_agree": None})
+        # PER-CATEGORY MACRO feature read (point-in-time, fail-silent, key-gated).
+        # Only for macro markets; for everything else mf stays the all-None
+        # neutral that leaves _brain_x's macro features at 0.0 and the global path
+        # unchanged. Reads FRED (DFF funds rate, DGS10/DGS2 yield curve, CPI YoY)
+        # when a FRED_API_KEY is present; absent, every field is None. No future
+        # data: see macro_features docstring.
+        mf = (macro_features(m, price) if is_macro
+              else {"macro_rate_dev": None, "macro_cpi_surprise": None,
+                    "macro_yield_signal": None})
         exit_keys = {}
         if strategy == "explore":
             # NO stop: a $1 stake is its own insurance (max loss = cost), and
@@ -4775,6 +4958,13 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                         "wx_fc_strike": wf_x["wx_fc_strike"],
                         "wx_fc_spread": wf_x["wx_fc_spread"],
                         "wx_model_agree": wf_x["wx_model_agree"],
+                        # per-category MACRO features (point-in-time, key-gated;
+                        # all None for non-macro markets -> _brain_x neutral 0.0
+                        # -> the macro specialist learns them, global path
+                        # unchanged).
+                        "macro_rate_dev": mf["macro_rate_dev"],
+                        "macro_cpi_surprise": mf["macro_cpi_surprise"],
+                        "macro_yield_signal": mf["macro_yield_signal"],
                         "sports_probe": 1 if sports_probe else None},
             "name": m["question"],
             "legs": [{"market_id": str(m["id"]), "question": m["question"],
@@ -6713,6 +6903,139 @@ def self_test():
        and all(k not in (m or {})
                for m in (bt_wx.get("specialists") or {}).values()
                for k in WEATHER_X_KEYS))
+
+    # ---- MACRO PER-CATEGORY FEATURE REGRESSION + LEAKAGE GUARD ---------------
+    # The weave adds macro_* features (Fed-rate deviation vs latest DFF, YoY CPI
+    # surprise vs consensus, 10Y-2Y yield-curve regime) to _brain_x + a macro-only
+    # entry-context hook (FRED, key-gated). HARD RULE: on the COMMON path
+    # (non-macro market / no macro signal -> macro ctx None) the model is IDENTICAL
+    # to before. We prove neutrality, the explicit-None==absent sentinel,
+    # signed/scaled/capped values, key-gating, and point-in-time leakage safety.
+    mx_plain = _brain_x("news", 0.6, base_ctx, "Yes")
+    ok("macro features default neutral (0.0) with no macro ctx",
+       mx_plain.get("m_ratedev") == 0.0 and mx_plain.get("m_cpisurp") == 0.0
+       and mx_plain.get("m_yieldsig") == 0.0)
+    # explicit None macro fields read identically to their absence (common path)
+    mx_none = _brain_x("news", 0.6, dict(base_ctx, macro_rate_dev=None,
+                                         macro_cpi_surprise=None,
+                                         macro_yield_signal=None), "Yes")
+    ok("macro: explicit None == absent (common path byte-identical)",
+       mx_none == mx_plain)
+    # rate-deviation signs and caps: market expects rates above DFF -> positive,
+    # capped to the spec range [-1.5, 1.5]
+    mx_r = _brain_x("news", 0.6, dict(base_ctx, macro_rate_dev=0.5), "Yes")
+    ok("macro: rate-deviation signs and caps (expect>DFF -> +, |.|<=1.5)",
+       0 < mx_r["m_ratedev"] <= 1.5
+       and _brain_x("news", 0.6, dict(base_ctx, macro_rate_dev=9.0),
+                    "Yes")["m_ratedev"] == 1.5
+       and _brain_x("news", 0.6, dict(base_ctx, macro_rate_dev=-9.0),
+                    "Yes")["m_ratedev"] == -1.5)
+    # CPI surprise normalized by 0.5% basis, clipped [-1.5, 1.5]: a +0.5pp
+    # surprise maps to +1.0; signs preserved; saturates at the cap.
+    mx_c = _brain_x("news", 0.6, dict(base_ctx, macro_cpi_surprise=0.5), "Yes")
+    ok("macro: CPI surprise normalized by 0.5% basis, signed, clipped [-1.5,1.5]",
+       abs(mx_c["m_cpisurp"] - 1.0) < 1e-9
+       and _brain_x("news", 0.6, dict(base_ctx, macro_cpi_surprise=2.0),
+                    "Yes")["m_cpisurp"] == 1.5
+       and _brain_x("news", 0.6, dict(base_ctx, macro_cpi_surprise=-2.0),
+                    "Yes")["m_cpisurp"] == -1.5)
+    # yield-curve regime codes pass through within their declared [-1.0, 0.5] band
+    ok("macro: yield-curve regime codes pass through ([-1.0,0.5])",
+       _brain_x("news", 0.6, dict(base_ctx, macro_yield_signal=-1.0),
+                "Yes")["m_yieldsig"] == -1.0
+       and _brain_x("news", 0.6, dict(base_ctx, macro_yield_signal=0.5),
+                    "Yes")["m_yieldsig"] == 0.5
+       and _brain_x("news", 0.6, dict(base_ctx, macro_yield_signal=0.0),
+                    "Yes")["m_yieldsig"] == 0.0)
+    # brain_adjust byte-identical with macro ctx absent vs explicit None
+    BRAIN.update(bt)
+    ma_absent = brain_adjust("news", 0.6, base_ctx, "Yes")
+    ma_none = brain_adjust("news", 0.6, dict(base_ctx, macro_rate_dev=None,
+                                             macro_cpi_surprise=None,
+                                             macro_yield_signal=None), "Yes")
+    ok("macro: brain_adjust identical when macro ctx absent vs None",
+       ma_absent == ma_none)
+    BRAIN.update(saved_brain)
+    # macro features stay weight ~0 when never present in training (inert)
+    ok("macro: feature weights ~0 when signal never present",
+       abs((bt_a.get("w") or {}).get("m_ratedev", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("m_cpisurp", 0.0)) < 1e-6
+       and abs((bt_a.get("w") or {}).get("m_yieldsig", 0.0)) < 1e-6)
+    # LEAKAGE / KEY-GATING: macro_features is point-in-time, fail-silent and
+    # key-gated. With NO FRED_API_KEY in the environment every FRED read returns
+    # [] and all three fields stay None — a deterministic no-network, no-key proof.
+    _saved_fred_key = os.environ.pop("FRED_API_KEY", None)
+    ORACLE_CACHE.pop(("fred", "DFF", 1), None)
+    try:
+        _mf_nokey = macro_features(
+            {"question": "Will the Fed funds rate be above 4.5% in July?"}, 0.6)
+        ok("macro: key-gated -> all-neutral with no FRED_API_KEY (silent skip)",
+           all(_mf_nokey[k] is None for k in
+               ("macro_rate_dev", "macro_cpi_surprise", "macro_yield_signal")))
+    finally:
+        if _saved_fred_key is not None:
+            os.environ["FRED_API_KEY"] = _saved_fred_key
+        ORACLE_CACHE.pop(("fred", "DFF", 1), None)
+    # a non-macro market yields the all-neutral dict (no subject match, no call)
+    _mf_none = macro_features({"question": "Will it rain in Tokyo tomorrow?"},
+                              0.6)
+    ok("macro: fail-silent neutral on a non-macro market (no subject match)",
+       all(_mf_none[k] is None for k in
+           ("macro_rate_dev", "macro_cpi_surprise", "macro_yield_signal")))
+    # rate-target parse is point-in-time (question text only): a "%"/"percent"
+    # target is read; a market with no target yields None (no forward read).
+    ok("macro: rate target parses from question text (point-in-time)",
+       abs(_macro_rate_target("Fed funds rate above 4.50% in July") - 4.5) < 1e-9
+       and _macro_rate_target("Will the Lakers win tonight?") is None)
+    # FRED read is point-in-time + key-gated: with a stubbed key + network the
+    # latest published observation is returned; missing-value "." is skipped and
+    # a future-dated value is NEVER fabricated (we only read what FRED publishes).
+    ORACLE_CACHE.pop(("fred", "DFF", 1), None)
+    _real_get = globals()["get_json"]
+    try:
+        os.environ["FRED_API_KEY"] = "TEST"
+        globals()["get_json"] = lambda *a, **k: {"observations": [
+            {"date": "2026-06-12", "value": "4.33"},
+            {"date": "2026-06-11", "value": "."}]}
+        ok("macro: FRED reads latest published value, skips missing '.' (PIT)",
+           abs(_fred_value("DFF") - 4.33) < 1e-9)
+        ORACLE_CACHE.pop(("fred", "DFF", 1), None)
+        globals()["get_json"] = lambda *a, **k: {"observations": []}
+        ok("macro: FRED empty observations -> None (fail-silent, no leak)",
+           _fred_value("DFF") is None)
+    finally:
+        globals()["get_json"] = _real_get
+        if _saved_fred_key is not None:
+            os.environ["FRED_API_KEY"] = _saved_fred_key
+        else:
+            os.environ.pop("FRED_API_KEY", None)
+        ORACLE_CACHE.pop(("fred", "DFF", 1), None)
+    # END-TO-END WIRING: a macro category whose outcome is driven by the
+    # rate-deviation feature forms a specialist that ACTUALLY WEIGHTS the macro
+    # keys, while the GLOBAL model never sees them (its w/specialists are strictly
+    # the pre-macro feature space). Proves the feature is learned by the right
+    # learner and isolated from the global one.
+    macro_fix = {"settled": [
+        {"strategy": "news", "pnl": (1.0 if i % 2 == 0 else -1.0),
+         "entry_price": 0.5, "side": "Yes", "category": "Economy",
+         "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+         "name": "Will the Fed funds rate be above 4.50%% in July #%d" % i,
+         "context": {"imbalance": 0.5, "spread": 0.01, "hours_to_end": 12,
+                     # market expects rates well above DFF on winners, below on
+                     # losers; curve inverted, CPI hot on the same parity:
+                     "macro_rate_dev": (0.6 if i % 2 == 0 else -0.6),
+                     "macro_cpi_surprise": (0.3 if i % 2 == 0 else -0.3),
+                     "macro_yield_signal": -1.0}}
+        for i in range(60)]}
+    bt_mc = brain_train(macro_fix)
+    mp = (bt_mc.get("cat_specialists") or {}).get("macro") or {}
+    ok("macro: specialist learns the rate-deviation key (m_ratedev!=0)",
+       abs((mp.get("w") or {}).get("m_ratedev", 0.0)) > 1e-3)
+    ok("macro: GLOBAL model carries NO macro keys (feature space isolated)",
+       all(k not in (bt_mc.get("w") or {}) for k in MACRO_X_KEYS)
+       and all(k not in (m or {})
+               for m in (bt_mc.get("specialists") or {}).values()
+               for k in MACRO_X_KEYS))
 
     # ===== PER-CATEGORY BRAIN SPECIALIST LAYER (partial pooling, OOS-gated) ===
     # The hard rule, tightened: the GLOBAL model must be byte-identical AFTER
