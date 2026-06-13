@@ -6,3 +6,4 @@
 | 2026-06-13 08:00 UTC | n=23 | 0.13 | logistic | -0.00557 | 0.21331 | 0.20774 | no_data | 22 new settles; brain credibility 0.13, market skill -0.0004 drift; lab optimal fade_12c_s8t15 |
 | 2026-06-13 08:22 UTC | n=25 | 0.0445 | logistic | -0.00453 | 0.21436 | 0.20983 | no_data | 2 new settles; brain cv_skill 0.0445 on n=29; mlmodel champion gbm beats market marginally; lab confirms fade_12c_s8t15 strategy optimal |
 | 2026-06-13 09:02 UTC | n=38 | 0.0967 | logistic | -0.00568 | 0.23811 | 0.21190 | no data | 13 new settles; brain skill +0.0522; mkt_skill drift -0.00115; lab: fade_12c_s8t15 optimal |
+| 2026-06-13 09:24 UTC | n=42 | 0.1402 | logistic | -0.00436 | 0.21578 | 0.21142 | no_data | 4 new settles; brain cv_skill improved +0.0435; mkt_skill improved (less negative); gbm champion Brier 0.21578 vs market 0.21142 (skill -0.00436); fade_12c_s8t15 confirmed optimal |
