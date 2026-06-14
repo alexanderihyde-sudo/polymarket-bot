@@ -6369,6 +6369,29 @@ def show_status(account):
 
 # ------------------------------------------------------------- dashboard
 
+def _roi_table(settled, key):
+    """Per-<key> (category or strategy) ROI on capital ACTUALLY deployed:
+    deployed = sum(cost), pnl = sum(pnl), roi% = pnl/deployed*100. Over the
+    FULL settled history (the page only ships the last 25 rows, so this must be
+    computed server-side). Sorted best-ROI first."""
+    agg = {}
+    for t in settled:
+        k = t.get(key) or "?"
+        a = agg.setdefault(k, {"n": 0, "deployed": 0.0, "pnl": 0.0, "wins": 0})
+        a["n"] += 1
+        a["deployed"] += t.get("cost") or 0.0
+        a["pnl"] += t.get("pnl", 0) or 0.0
+        a["wins"] += 1 if (t.get("pnl", 0) or 0) > 0 else 0
+    rows = []
+    for k, a in agg.items():
+        dep = a["deployed"]
+        rows.append({"key": k, "n": a["n"], "deployed": round(dep, 2),
+                     "pnl": round(a["pnl"], 2),
+                     "roi": round(100.0 * a["pnl"] / dep, 1) if dep else 0.0,
+                     "win": round(100.0 * a["wins"] / a["n"]) if a["n"] else 0})
+    return sorted(rows, key=lambda r: -r["roi"])
+
+
 def dashboard_state():
     """Everything the web page needs, read fresh from disk each time."""
     cfg = load_config()
@@ -6511,6 +6534,10 @@ def dashboard_state():
                            + sum(t["pnl"] for t in account["settled"] if t["strategy"] == s)
                            + sum(p["pnl"] for p in positions if p["strategy"] == s), 2),
         } for s in STRATEGIES},
+        "roi": {
+            "by_category": _roi_table(account["settled"], "category"),
+            "by_strategy": _roi_table(account["settled"], "strategy"),
+        },
     }
 
 

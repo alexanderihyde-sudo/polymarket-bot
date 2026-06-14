@@ -21,6 +21,20 @@
     -webkit-font-smoothing: antialiased; }
   .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
   .up { color: var(--green); } .dn { color: var(--red); }
+  .roi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 30px; }
+  @media (max-width: 760px) { .roi-grid { grid-template-columns: 1fr; } }
+  .roi-h { font-size: 11.5px; font-weight: 650; color: var(--dim); letter-spacing: .04em;
+           text-transform: uppercase; margin: 6px 0 9px; }
+  .roi-row { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .roi-top { display: grid; grid-template-columns: 92px 1fr 58px; align-items: center; gap: 11px; }
+  .roi-key { font-size: 12.5px; color: var(--ink); white-space: nowrap; overflow: hidden;
+             text-overflow: ellipsis; }
+  .roi-track { background: var(--line2); height: 8px; border-radius: 5px; overflow: hidden; }
+  .roi-fill { height: 100%; border-radius: 5px; transition: width .5s ease; }
+  .roi-pct { font-size: 12.5px; font-weight: 650; text-align: right;
+             font-variant-numeric: tabular-nums; }
+  .roi-meta { font-size: 10.5px; color: var(--faint); margin-top: 2px;
+              font-variant-numeric: tabular-nums; }
 
   #topbar { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap;
     padding: 18px 32px 6px; background: var(--card);
@@ -267,6 +281,14 @@
   </div>
 
   <div id="stats"></div>
+
+  <div class="panel" id="roipanel">
+    <div style="display:flex;align-items:baseline;gap:12px;padding:2px 2px 12px;flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:650">ROI by category &amp; strategy</span>
+      <span style="font-size:11px;color:var(--muted)">return on capital actually deployed · full settled history</span>
+    </div>
+    <div class="roi-grid" id="roibody"></div>
+  </div>
 
   <div class="panel">
     <div id="tabbar">
@@ -644,6 +666,32 @@ document.addEventListener("click", e => {
   }
 });
 
+/* ── ROI by category & strategy (return on capital deployed) ── */
+function roiCol(title, rows) {
+  if (!rows || !rows.length)
+    return `<div><div class="roi-h">${title}</div>` +
+           `<div style="color:var(--faint);font-size:12px">no settled trades yet</div></div>`;
+  const mx = Math.max(1, ...rows.map(r => Math.abs(r.roi)));
+  let h = `<div><div class="roi-h">${title}</div>`;
+  for (const r of rows) {
+    const w = Math.min(100, Math.abs(r.roi) / mx * 100);
+    const col = r.roi >= 0 ? "var(--green)" : "var(--red)";
+    const k = r.roi >= 0 ? "up" : "dn";
+    h += `<div class="roi-row"><div class="roi-top">` +
+      `<div class="roi-key" title="${esc(r.key)}">${esc(r.key)}</div>` +
+      `<div class="roi-track"><div class="roi-fill" style="width:${w}%;background:${col}"></div></div>` +
+      `<div class="roi-pct ${k}">${r.roi >= 0 ? "+" : ""}${r.roi.toFixed(1)}%</div></div>` +
+      `<div class="roi-meta">$${r.deployed.toFixed(2)} deployed · ` +
+      `${r.pnl >= 0 ? "+" : ""}$${r.pnl.toFixed(2)} P&L · ${r.win}% win · ${r.n} bets</div></div>`;
+  }
+  return h + "</div>";
+}
+function renderROI() {
+  const R = (S && S.roi) || {};
+  $("roibody").innerHTML = roiCol("By category", R.by_category) +
+                           roiCol("By strategy", R.by_strategy);
+}
+
 /* ── main render ────────────────────────────────────────────── */
 function render() {
   const s = S, a = s.account;
@@ -687,6 +735,7 @@ function render() {
   renderChart();
   renderCurve();
   renderSmart();
+  renderROI();
 
   // stat strip
   const M = s.metrics || {}, R = s.risk || {}, mo = s.models || {};
