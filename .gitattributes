@@ -1,0 +1,4 @@
+# Append-only run logs: both background crons append; union-merge avoids
+# spurious non-fast-forward conflicts when AUTOPILOT and TRAINER both push.
+TRAIN_LOG.md merge=union
+QUANT_LOG.md merge=union

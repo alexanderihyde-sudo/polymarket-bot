@@ -72,7 +72,7 @@
     "high_prob": 5250.0,
     "news": 250.0,
     "explore": 1000.0,
-    "daytrade": 500.0
+    "daytrade": 0.0
   },
   "risk": {
     "max_daily_loss_pct": 3.0
