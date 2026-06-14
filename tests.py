@@ -265,10 +265,64 @@ def test_oracles():
        bot.whale_verdict(None, 0) is None)
 
 
+def test_perf_io():
+    # Pins the two zero-behavior-change perf optimizations: the in-RAM
+    # history.json mirror and the _q_tokens memoization.
+    import os
+    import tempfile
+    import time as _time
+    from pathlib import Path
+    d = Path(tempfile.mkdtemp())
+    saved = bot.HISTORY_FILE
+    bot.HISTORY_FILE = d / "history.json"
+    bot._HISTORY = None
+    bot._HISTORY_MTIME = None
+    try:
+        acct = lambda cash: {"cash": cash, "positions": [], "settled": []}
+        bot.record_history(acct(100.0))
+        h = json.loads(bot.HISTORY_FILE.read_text())
+        ok("perf/history first write one point",
+           len(h) == 1 and h[-1]["cash"] == 100.0)
+        before = bot.HISTORY_FILE.read_bytes()
+        bot.record_history(acct(100.0))                 # flat tick -> skipped
+        ok("perf/history flat tick skipped (no rewrite)",
+           bot.HISTORY_FILE.read_bytes() == before)
+        bot.record_history(acct(101.0))                 # changed -> appended
+        h = json.loads(bot.HISTORY_FILE.read_text())
+        ok("perf/history changed tick appended",
+           len(h) == 2 and h[-1]["cash"] == 101.0)
+        ok("perf/history mirror equals disk (no stale)",
+           bot._history() == json.loads(bot.HISTORY_FILE.read_text()))
+        # del-slice write is byte-identical to the old json.dumps(history[-20000:])
+        for n in (0, 1, 19999, 20000, 20001, 40000):
+            lst = [{"i": i} for i in range(n)]
+            cp = list(lst)
+            del cp[:-20000]
+            ok("perf/history del-slice==slice n=%d" % n,
+               json.dumps(cp) == json.dumps(lst[-20000:]))
+        # an external edit (new mtime) must force a reload, never serve stale
+        bot.HISTORY_FILE.write_text(json.dumps([{"t": "x", "cash": 7.0,
+                                                 "invested": 0.0}]))
+        os.utime(bot.HISTORY_FILE, (_time.time() + 5, _time.time() + 5))
+        ok("perf/history external edit forces reload",
+           bot._history()[-1]["cash"] == 7.0)
+    finally:
+        bot.HISTORY_FILE = saved
+        bot._HISTORY = None
+        bot._HISTORY_MTIME = None
+    # _q_tokens memoization: correct tokens + cache live (returns same object)
+    bot._q_tokens.cache_clear()
+    toks = bot._q_tokens("Federal Reserve interest rate decision soon")
+    ok("perf/tokens correct after memoize",
+       "federal" in toks and "reserve" in toks and "decision" in toks)
+    ok("perf/tokens memoized (cache returns same object)",
+       bot._q_tokens("Federal Reserve interest rate decision soon") is toks)
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
-       test_risk_and_money, test_oracles)
+       test_risk_and_money, test_oracles, test_perf_io)
 
 if __name__ == "__main__":
     t0 = time.time()

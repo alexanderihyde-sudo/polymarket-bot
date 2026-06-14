@@ -29,6 +29,7 @@ trades before it starts adapting — adjusting on less data would just be noise.
 """
 
 import csv
+import functools
 import json
 import math
 import ml  # the bot's pure-Python ML library (GBM/forest/MLP/calibration)
@@ -542,15 +543,34 @@ def save_account(account):
     atomic_write(ACCOUNT_FILE, json.dumps(account, indent=2))
 
 
+_HISTORY = None
+_HISTORY_MTIME = None
+
+
+def _history():
+    """In-RAM mirror of history.json so the ~1/s monitor tick doesn't re-parse
+    the whole (multi-MB) file every call. Reloads only when the on-disk mtime
+    changes — covering the reset path and any out-of-band edit — so the data
+    returned is identical to reading the file fresh each time."""
+    global _HISTORY, _HISTORY_MTIME
+    try:
+        mt = HISTORY_FILE.stat().st_mtime if HISTORY_FILE.exists() else None
+    except OSError:
+        mt = None
+    if _HISTORY is None or mt != _HISTORY_MTIME:
+        try:
+            _HISTORY = (json.loads(HISTORY_FILE.read_text())
+                        if HISTORY_FILE.exists() else [])
+        except ValueError:
+            _HISTORY = []
+        _HISTORY_MTIME = mt
+    return _HISTORY
+
+
 def record_history(account, force=False):
     """Snapshot account value for the dashboard chart. Quiet minutes where
     nothing changed are skipped so the file doesn't fill up with flat points."""
-    history = []
-    if HISTORY_FILE.exists():
-        try:
-            history = json.loads(HISTORY_FILE.read_text())
-        except ValueError:
-            history = []
+    history = _history()
     invested = sum(position_value(p) for p in account["positions"])
     alloc = load_config().get("allocations", {})
     strat = {}
@@ -569,7 +589,13 @@ def record_history(account, force=False):
             and history[-1]["invested"] == point["invested"]):
         return
     history.append(point)
-    atomic_write(HISTORY_FILE, json.dumps(history[-20000:]))
+    del history[:-20000]                 # bound the resident mirror in place;
+    atomic_write(HISTORY_FILE, json.dumps(history))   # bytes == old [-20000:]
+    global _HISTORY_MTIME                 # adopt our own write's mtime so the
+    try:                                  # next tick serves the mirror, not a
+        _HISTORY_MTIME = HISTORY_FILE.stat().st_mtime   # 4MB reload of our own
+    except OSError:                       # write (still reloads on edits by
+        _HISTORY_MTIME = None             # the reset path / any other writer)
 
 
 def log_trade(action, strategy, name, detail, cost, proceeds, pnl, cash_after):
@@ -3707,7 +3733,12 @@ _NEWS_STOP = {"will", "the", "with", "that", "this", "from", "have", "been",
               "2026", "2027", "news", "live", "today"}
 
 
+@functools.lru_cache(maxsize=512)
 def _q_tokens(text):
+    # Memoized: the news/sentiment scans re-tokenize the same ~400 headlines
+    # for every market every cycle. Pure function (depends only on `text` +
+    # the constant _NEWS_STOP); callers only read the result (q & ..., len(q)),
+    # never mutate it, so sharing the cached set is safe and byte-identical.
     t = (text or "").lower().replace(",", "")   # "$70,000" must survive as
     return {w for w in re.sub(r"[^a-z0-9 ]", " ", t).split()  # one token
             if len(w) >= 4 and w not in _NEWS_STOP}
