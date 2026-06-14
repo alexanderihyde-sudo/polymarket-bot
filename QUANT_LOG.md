@@ -1855,3 +1855,29 @@ REJECTED — Proposal 5 (sports_probe weather exclusion at bot.py:4995): Contami
 
 ## 2026-06-14 — AUTOPILOT: shipped nothing — adversarial review killed it: safety-rail violation flagged. commit 13bec2b
 2026-06-14 AUTOPILOT: shipped nothing — adversarial review killed it: failed review (0/3 cleared). commit 10a1310
+
+## 2026-06-14 ~16:58 UTC — AUTOPILOT cycle 4 (ship)
+
+**Shipped**: commit `54a9c94` — "fix calibration_table for logistic champion" (bot.py, +25/-2).
+
+**What it does**: When the champion model is the raw-weight logistic dict, it has
+no `kind` field, so `ml.predict()` raised `ValueError('unknown model kind: None')`
+inside the calibration-table build; the outer `except Exception: pass` swallowed it
+and `calibration_table` was left None across every training epoch (confirmed in
+brain.json). The fix dispatches like the existing `stack_p` (lines 2360-2363):
+`_predict(model, x)` for the logistic champion, `ml.predict(model, x)` otherwise,
+then builds the per-bin predicted-vs-actual table inline.
+
+**Evidence**: (1) brain.json shows calibration_table=None across all epochs;
+(2) logistic `w` lacks a `kind` key; (3) the swallowing `except` is at the block
+tail; (4) the only consumer is the BRAIN cache re-serve at line 2233 — a read-only
+diagnostic surfaced on the dashboard. No trade-sizing, execution, wallet, or
+safety-gate path reads calibration_table. No PnL impact.
+
+**Tests / checks**: `python3 -m py_compile bot.py` → OK. Post-restart
+`/api/health` → ok:true, audit=="balanced", age_seconds≈20, exactly 2 procs
+(python + caffeinate). Pre-ship equity cash=$9287.28 (25 open, 408 settled);
+post-ship unchanged. Watchdog alive throughout (fenced via .autopilot_pause
+during restart, re-armed after).
+
+**Rollback**: `git reset --hard HEAD~1` returns to f33f12e (HEAD~1 of this ship).
