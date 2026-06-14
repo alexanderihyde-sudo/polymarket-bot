@@ -2328,6 +2328,16 @@ def brain_train(account):
                               for n, s in zoo_scores.items()}}
         out["skill_factor"] = max(0.25, min(1.0, 0.5 + 4.0 * champ_skill))
     out["models"], out["stack"] = {}, []
+    # Champion-dominance gate: when the best model clearly outskills the
+    # runner-up, deploy it ALONE rather than diluting it in the skill-weighted
+    # committee (the blend was giving a dominant champion only ~21-23% of the
+    # vote on the probability that drives sizing). Inert when models are close
+    # (ratio < threshold), so the committee path — and the golden byte-identity
+    # fixtures — stay unchanged.
+    CHAMP_DOMINANCE = 1.35   # champion must outskill the runner-up by 35%+ to solo
+    if (len(positive) >= 2 and positive[1][1] > 0
+            and positive[0][1] >= CHAMP_DOMINANCE * positive[1][1]):
+        positive = [positive[0]]
     tot = sum(s for _, s in positive)
     for name, s in positive:
         try:
