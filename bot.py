@@ -2379,8 +2379,31 @@ def brain_train(account):
                 if (_cal_ll(ml.fit_isotonic(preds[:c2]))
                         < _cal_ll(ml.fit_platt(preds[:c2]))):
                     out["cal"] = ml.fit_isotonic(preds)
-            out["calibration_table"] = ml.calibration_table(
-                tr_models.get(champ, list(tr_models.values())[0]), hold)                 if champ in tr_models else None
+            if champ in tr_models:
+                champ_model = tr_models[champ]
+                if champ == "logistic":
+                    # logistic is a raw weight dict with no "kind" field, so
+                    # ml.predict() can't dispatch on it; predict with _predict
+                    # and reuse the same per-bin binning as ml.calibration_table
+                    def _cal_pred(x):
+                        return _predict(champ_model, x)
+                else:
+                    def _cal_pred(x):
+                        return ml.predict(champ_model, x)
+                _cal_rows = sorted((_cal_pred(x), y) for x, y in hold)
+                _cal_step = max(1, len(_cal_rows) // 5)
+                _cal_table = []
+                for _cal_i in range(0, len(_cal_rows), _cal_step):
+                    _cal_chunk = _cal_rows[_cal_i:_cal_i + _cal_step]
+                    if len(_cal_chunk) < 3:
+                        continue
+                    _cal_table.append({
+                        "predicted": round(sum(p for p, _ in _cal_chunk) / len(_cal_chunk), 3),
+                        "actual": round(sum(y for _, y in _cal_chunk) / len(_cal_chunk), 3),
+                        "n": len(_cal_chunk)})
+                out["calibration_table"] = _cal_table
+            else:
+                out["calibration_table"] = None
     except Exception:
         pass
     # honest interpretability: permutation importance of the actual champion
