@@ -4153,6 +4153,153 @@ def sportsedge_loop():
         time.sleep(1200)
 
 
+# -------------------------------------------- goal-snipe SHADOW instrument
+# Measures, for FREE on real scoring events, whether the bot could snipe a goal
+# before the market reprices — i.e. is the ESPN feed FASTER than the crowd, or
+# does the bot get PICKED OFF. Trades $0: it never calls open_position and never
+# touches is_in_game (the live in-game gate that protects the account). On a
+# detected goal it records the mid of the scoring side AT DETECTION, then grades
+# the price N seconds later: edge = mid_N - mid_detect. edge > 0 = the price was
+# still moving our way after we detected (feed won); edge ~ 0 = already moved
+# (picked off). N starts at 12s because that IS the bot's real detection lag —
+# an edge that only exists at N=0 is one we cannot actually capture. Single-feed
+# sports (soccer: ESPN-only) are scored separately on a higher bar.
+SNIPE_FILE = HERE / "snipe_shadow.json"
+try:
+    SNIPE_SHADOW = json.loads(SNIPE_FILE.read_text())
+except (FileNotFoundError, ValueError):
+    SNIPE_SHADOW = {"pending": [], "graded": [], "scorecard": {}}
+_SNIPE_PREV = {}                       # game key (frozenset) -> last rep we saw
+_SNIPE_NS = (12, 24, 36, 60, 120)      # grade offsets (s), >= the ~12s detect lag
+
+
+def _snipe_scoring_token(old_rep, new_rep):
+    """The min team-token of the side whose score just went UP between two
+    _score_rep tuples, or None if 0 or >1 sides moved (ambiguous)."""
+    try:
+        old = {t: int(s) for t, s in old_rep}
+        new = {t: int(s) for t, s in new_rep}
+    except (ValueError, TypeError):
+        return None
+    up = [t for t in new if t in old and new[t] > old[t]]
+    return up[0] if len(up) == 1 else None
+
+
+def _snipe_sports_markets():
+    """Read-only: current active sports markets as {teams, legs:[(token, tokens)]}.
+    Mirrors the sportsedge market fetch; used only when a goal just fired."""
+    markets, out = [], []
+    for off in (0, 100, 200):
+        page = get_json(f"{GAMMA}/markets", params={
+            "active": "true", "closed": "false", "order": "endDate",
+            "ascending": "true", "limit": 100, "offset": off,
+            "end_date_min": now_utc().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date_max": (now_utc() + timedelta(hours=48)
+                             ).strftime("%Y-%m-%dT%H:%M:%SZ")}) or []
+        markets += page
+        if len(page) < 100:
+            break
+    for m in markets:
+        q = m.get("question") or ""
+        if not (cluster_of(q) == "sports-game" or _SPORTSY.search(q)):
+            continue
+        outs, toks = jlist(m.get("outcomes")), jlist(m.get("clobTokenIds"))
+        if len(outs) != 2 or len(toks) != 2:
+            continue
+        legs = [(str(toks[i]), sportsedge._tok(outs[i])) for i in (0, 1)]
+        if not (legs[0][1] and legs[1][1]):
+            continue
+        out.append({"mid": str(m.get("id")), "q": q[:80],
+                    "teams": legs[0][1] | legs[1][1], "legs": legs})
+    return out
+
+
+def _snipe_mid(token):
+    try:
+        bs = book_stats(token)
+        return (bs["bid"] + bs["ask"]) / 2 if bs else None
+    except Exception:
+        return None
+
+
+def snipe_shadow_pass():
+    """One $0 shadow pass: detect goals, record the would-be snipe, grade it.
+    Never trades, never touches is_in_game; writes only snipe_shadow.json."""
+    now = time.time()
+    goals = []                         # (game key, scoring token, single_source)
+    for key, st in list(SCORE_STATE.items()):
+        rep, prev = st.get("rep"), _SNIPE_PREV.get(key)
+        _SNIPE_PREV[key] = rep
+        if prev is not None and prev != rep:
+            stok = _snipe_scoring_token(prev, rep)
+            if stok:
+                goals.append((key, stok, st.get("seen") == {"espn"}))
+    if goals:
+        mkts = _snipe_sports_markets()
+        for key, stok, single in goals:
+            for m in mkts:
+                if len(m["teams"] & key) < 2:
+                    continue           # different game
+                idx = (0 if stok in m["legs"][0][1]
+                       else 1 if stok in m["legs"][1][1] else None)
+                if idx is None:
+                    continue
+                p0 = _snipe_mid(m["legs"][idx][0])
+                if p0 is None:
+                    continue
+                SNIPE_SHADOW["pending"].append({
+                    "detect_ts": now, "game": m["q"], "market": m["mid"],
+                    "token": m["legs"][idx][0], "p_detect": round(p0, 4),
+                    "single_source": single, "grades": {}})
+        SNIPE_SHADOW["pending"] = SNIPE_SHADOW["pending"][-500:]
+    still = []
+    for row in SNIPE_SHADOW["pending"]:
+        elapsed = now - row["detect_ts"]
+        for N in _SNIPE_NS:
+            if elapsed >= N and str(N) not in row["grades"]:
+                mid = _snipe_mid(row["token"])
+                if mid is not None:
+                    row["grades"][str(N)] = round(mid - row["p_detect"], 4)
+        (still if elapsed < _SNIPE_NS[-1] + 30
+         else SNIPE_SHADOW["graded"]).append(row)
+    SNIPE_SHADOW["pending"] = still
+    SNIPE_SHADOW["graded"] = SNIPE_SHADOW["graded"][-2000:]
+
+    def card(rows):
+        c = {"n": len(rows)}
+        for N in _SNIPE_NS:
+            es = [r["grades"][str(N)] for r in rows if str(N) in r["grades"]]
+            if es:
+                c[f"edge_{N}s"] = round(sum(es) / len(es), 4)
+                c[f"hit_{N}s"] = round(sum(e > 0 for e in es) / len(es), 3)
+                c[f"n_{N}s"] = len(es)
+        return c
+    g = SNIPE_SHADOW["graded"]
+    SNIPE_SHADOW["scorecard"] = {
+        "all": card(g),
+        "single_source": card([r for r in g if r.get("single_source")]),
+        "multi_source": card([r for r in g if not r.get("single_source")]),
+        "verdict": ("shadow-only — go live ONLY on 30+ graded goals with a "
+                    "net-of-fees POSITIVE edge at an achievable offset, in a "
+                    "separate capped lane with sign-off; never weaken is_in_game"),
+        "updated": now_utc().isoformat(timespec="seconds")}
+    atomic_write(SNIPE_FILE, json.dumps(SNIPE_SHADOW))
+    return SNIPE_SHADOW["scorecard"]
+
+
+def snipe_loop():
+    """Goal-snipe SHADOW heartbeat — every 8s, detect goals and grade whether a
+    snipe would have beaten the market. Trades $0; wrapped so it can never
+    disturb the trading process."""
+    time.sleep(60)                     # let warmstart + score watcher settle
+    while True:
+        try:
+            snipe_shadow_pass()
+        except Exception as e:
+            print(f"  ! snipe shadow error: {e}")
+        time.sleep(8)
+
+
 # ------------------------------------------- per-category SPORTS feature read
 # CATEGORY SPECIALIST FEED for "sports". Reads three point-in-time, fail-silent
 # sources at decision time and exposes them as neutral-defaulting context, which
@@ -7902,6 +8049,12 @@ def self_test():
        _score_rep("South Korea", "Czechia", 1, 1) ==
        _score_rep("Czechia", "Korea Republic FC", 1, 1))
 
+    ok("snipe: scoring side detected, ambiguous double-score abstains",
+       _snipe_scoring_token(_score_rep("Lakers", "Celtics", 0, 0),
+                            _score_rep("Lakers", "Celtics", 1, 0)) == "lakers"
+       and _snipe_scoring_token(_score_rep("Lakers", "Celtics", 0, 0),
+                                _score_rep("Lakers", "Celtics", 1, 1)) is None)
+
     flat = [0.50 + (0.002 if i % 2 else -0.002) for i in range(60)]
     ok("chart: calm tape = drift", _chart_stats(flat)["chart_pattern"] == "drift")
     spike = [0.50] * 40 + [0.50 + 0.02 * i for i in range(1, 11)] + [0.66, 0.62, 0.58]
@@ -8206,6 +8359,9 @@ def main():
         threading.Thread(target=sportsedge_loop, daemon=True).start()
         print("Sportsedge instrument on: SHADOW mode — grades its own sports "
               "fair-value/CLV, trades $0 until measured edge earns it.")
+        threading.Thread(target=snipe_loop, daemon=True).start()
+        print("Goal-snipe instrument on: SHADOW mode — measures feed-vs-market "
+              "latency on real goals, trades $0, never weakens is_in_game.")
         threading.Thread(target=crossmarket_loop, daemon=True).start()
         print("Cross-market instrument on: SHADOW mode — Kalshi/PredictIt/"
               "Manifold consensus, graded vs the PM price, trades $0 until the "
