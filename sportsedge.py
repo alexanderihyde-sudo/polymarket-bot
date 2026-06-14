@@ -43,6 +43,13 @@ _PROP_RX = re.compile(
     r"first to|exact score|both teams|total .* (over|under)|how many"
     r"|margin|player|mvp|assists|rebounds|home run|strikeout|\bprop\b",
     re.I)
+# Spread / run-line / total / period markets settle on COVER, not who won the
+# game — grading them with the moneyline result is the contamination that made
+# the old scorecard meaningless. v1 is moneyline only: reject these outright.
+_SPREAD_RX = re.compile(
+    r"spread|run ?line|puck ?line|handicap|1st 5|first 5|innings"
+    r"|\bo/u\b|over/under|to win by|[+-]\d+\.5|\(-\d|\(\+\d|corner",
+    re.I)
 # city tokens are NOT distinctive — two New York teams share "new york".
 # A real join needs a non-city token (team nickname) in common.
 _CITY_TOKENS = {
@@ -74,7 +81,7 @@ def join_event(market, espn_board):
     The market dict needs: 'question', 'date' (YYYY-MM-DD, the game day),
     'league' (one of SCORE_LEAGUES), 'outcomes' (the two team labels)."""
     q = market.get("question") or ""
-    if _FUTURES_RX.search(q) or _PROP_RX.search(q):
+    if _FUTURES_RX.search(q) or _PROP_RX.search(q) or _SPREAD_RX.search(q):
         return None
     if market.get("league") not in SCORE_LEAGUES:
         return None
@@ -389,6 +396,9 @@ def self_test():
                    board) is None,                          # futures
         join_event({**base_mkt, "question": "Total runs over 8.5",
                     "outcomes": ["Over", "Under"]}, board) is None,  # prop
+        join_event({**base_mkt, "question": "Yankees vs. Red Sox spread -1.5",
+                    "outcomes": ["Yankees -1.5", "Red Sox +1.5"]},
+                   board) is None,                          # spread/cover
         join_event({**base_mkt, "date": "2026-06-14"}, board) is None,  # day
         join_event({**base_mkt, "league": "TENNIS"}, board) is None,    # lg
         join_event({**base_mkt, "outcomes": ["New York", "New York"]},

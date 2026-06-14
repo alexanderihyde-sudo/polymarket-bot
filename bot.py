@@ -3974,6 +3974,14 @@ def sportsedge_shadow_pass(account):
     live/pre sports market, log a shadow prediction, grade resolved ones by
     CLV, persist. Trades NOTHING. Returns the scorecard."""
     st = SPORTSEDGE
+    # Schema v2: the old grader FABRICATED clv — it set close=0.99/0.01 (the
+    # game's final result, not a real line) and market_price=entry, so every
+    # "beats market / CLV" number was synthetic. Purge those preds once and
+    # re-score from zero against a real pre-game-frozen close.
+    if st.get("sv") != 2:
+        st["preds"] = []
+        st.pop("scorecard", None)
+        st["sv"] = 2
     board = _espn_board()
     by_id = {e["id"]: e for e in board}
 
@@ -4001,7 +4009,8 @@ def sportsedge_shadow_pass(account):
         if len(page) < 100:
             break
     preds = st.get("preds") or []
-    logged_ids = {p["market_id"] for p in preds if not p.get("resolved")}
+    open_by_mid = {p["market_id"]: p for p in preds if not p.get("resolved")}
+    logged_ids = set(open_by_mid)
     n_eval = n_logged = n_abstain = 0
     for m in markets:
         q = m.get("question") or ""
@@ -4032,6 +4041,13 @@ def sportsedge_shadow_pass(account):
             ask_yes, ask_no = float(prices[0]), float(prices[1])
         except (ValueError, IndexError, TypeError):
             continue
+        # Freeze the latest PRE-GAME mid as the honest closing line: while the
+        # game has not started, overwrite close_mid each pass, so the last
+        # pre-game observation before tip-off is the close used for CLV.
+        m_id = str(m.get("id"))
+        if ev["state"] == "pre" and m_id in open_by_mid:
+            open_by_mid[m_id]["close_mid"] = round(ask_yes, 4)
+            open_by_mid[m_id]["close_ts"] = now_utc().isoformat(timespec="seconds")
         feats = {"league": ev["league"], "a": outs[0], "b": outs[1],
                  "home_adv": 0.0,
                  "state": "in" if ev["state"] == "in" else "pre",
@@ -4064,19 +4080,30 @@ def sportsedge_shadow_pass(account):
             side_tok = sportsedge._tok(p["side"])
             side_is_home = bool(side_tok & sportsedge._tok(ev["home"]))
             won = ev["home_won"] if side_is_home else 1 - ev["home_won"]
-            close = 0.99 if won else 0.01     # binary settles to ~1/0
-            p.update({"resolved": True, "won": int(won),
-                      "market_price": p["entry"],
-                      "clv": round(close - p["entry"], 4)})
+            close_mid = p.get("close_mid")
+            upd = {"resolved": True, "won": int(won)}
+            if close_mid is not None:
+                # honest CLV: real pre-game-frozen mid vs our entry price
+                upd["market_price"] = close_mid
+                upd["clv"] = round(close_mid - p["entry"], 4)
+            else:
+                # never froze a pre-game mid (logged in-game, or the game
+                # started between 20-min passes) -> resolved but NOT scored
+                upd["market_price"] = None
+                upd["clv"] = None
+            p.update(upd)
         graded.append(p)
     st["preds"] = graded[-1000:]
 
     done = [p for p in st["preds"] if p.get("resolved")]
+    scored = [p for p in done
+              if p.get("clv") is not None and p.get("market_price") is not None]
     sc = sportsedge.grade([{"p_true": p["p_true"],
-                            "market_price": p.get("market_price", p["entry"]),
-                            "won": p["won"], "clv": p.get("clv", 0.0)}
-                           for p in done]) if done else {"n": 0}
+                            "market_price": p["market_price"],
+                            "won": p["won"], "clv": p["clv"]}
+                           for p in scored]) if scored else {"n": 0}
     sc.update({"open_preds": len(st["preds"]) - len(done),
+               "graded_unscored": len(done) - len(scored),
                "evaluated": n_eval, "logged": n_logged,
                "abstained": n_abstain,
                "abstain_rate": round(n_abstain / max(n_eval, 1), 3),
