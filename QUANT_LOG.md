@@ -1791,3 +1791,4 @@ P4 (chartml dt=15.0 for daytrade, chartml.py): backwards vs the code's own docs.
 P5 (filter closed tokens from daytrade universe, bot.py:5809+): self-admittedly 'no direct PnL improvement' and 'no actual trading losses measured.' 369 total / 179 book-404s in bot.log are real but harmless (skip logic already handles None). Pure housekeeping on a $0-allocation strategy; one suggested fix (halving refresh to 120s) would increase steady-state API load. Reject: no measurable PnL/risk benefit, not worth a cycle.
 
 Honest default with weak/absent evidence and a tiny live sample is to ship nothing this cycle.
+2026-06-14 AUTOPILOT: shipped nothing — adversarial review killed it: failed review (0/3 cleared). commit f259c76
