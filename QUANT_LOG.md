@@ -1881,3 +1881,14 @@ post-ship unchanged. Watchdog alive throughout (fenced via .autopilot_pause
 during restart, re-armed after).
 
 **Rollback**: `git reset --hard HEAD~1` returns to f33f12e (HEAD~1 of this ship).
+
+## 2026-06-14
+AUTOPILOT: shipped nothing — judge chose nothing: Verified all four proposals against live paper_account.json and bot.py. None clears the bar; the honest default is to ship nothing.
+
+P1 (brain gate 0.45->0.70): single-outlier overfit. The adj<0.70 bucket's -$2.69 is one trade (Israel airspace, adj=0.69, -$2.54 on $118.94 cost). Leave-one-out: without it the bucket is -$0.15 over 7 trades / 4 wins, indistinguishable from the >=0.70 bucket (+$0.25). Only ~5 material era-clean settles exist in the whole high_prob book. The 0.70 threshold was chosen to catch a single 0.69 loss. Sizing change on noise.
+
+P2 (filter model-exit from calibration): premise is backwards. Model-exit stop-outs are real book losses, not measurement pollution. Removing them teaches the calibrator to ignore the cases where model confidence was wrong, making it appear better-calibrated than live PnL proves — weakens honesty. Impact is speculative.
+
+P3 (skip confirmed news when mode=fade): era-hygiene violation via double-counting. The gate blocks confirmed trades stored as mode='follow-news', whose current-code-producible live record is n=2, -$0.06. The headline -$3.09 lumps in 2 mode='follow' trades that current code (config news.mode='fade') cannot reproduce — it emits only 'fade' or 'follow-news', never plain 'follow'. Those are dead-cohort losses and cannot testify.
+
+P4 (weather misclassification in is_sport): identifies a real bug (weather markets tagged sports_probe via gameStartTime, ~$21.53 + 12 settled probes), but the proposed code is broken: it references is_weather at lines 5002-5004 while is_weather is not defined until lines 5008-5010 (after is_sport), causing UnboundLocalError that crashes the scan loop. Shipping unchanged breaks the bot. PnL stakes are tiny (weather probes -$0.17/14 settles, 10 wins, all $5-capped). A correct fix requires reordering definitions — a different change than proposed.
