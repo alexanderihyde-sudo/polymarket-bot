@@ -5266,7 +5266,7 @@ def open_position(account, opp, cfg=None):
     if len(ORDER_TIMES) >= 30:
         return  # governor: hard ceiling of 30 order operations per minute
     budget = strategy_budget(cfg, account, opp["strategy"]) if cfg else account["cash"]
-    if opp["cost"] > min(budget, account["cash"]):
+    if budget < opp["cost"] or opp["cost"] > account["cash"]:
         note(f"skip (sub-account budget reached): {opp['name'][:60]}")
         return
     if opp["strategy"] != "arbitrage":
