@@ -76,6 +76,12 @@ API_RATE, API_CAP = 8.0, 16.0          # sustained calls/sec, burst ceiling
 API_BUCKET = {"t": time.time(), "tokens": API_CAP}
 API_STATS = {"calls": 0, "throttled": 0, "rate_limited": 0}
 
+# Tokens Gamma still lists in clobTokenIds but CLOB has delisted: a book fetch
+# returns nothing, and we keep retrying the same stale id every scan. Once a
+# fetch comes back empty we remember the id and skip it for the rest of the
+# process; a restart clears the set so a (rare) relist is picked back up.
+DEAD_TOKENS = set()
+
 
 def _governor():
     """One shared API budget across scanner, explorer, exits and recorder.
@@ -137,7 +143,11 @@ def jlist(value):
 def best_ask(token_id):
     """Lowest price someone will sell this outcome for, plus how many shares.
     Returns (price, size) or (None, 0) if the book is empty."""
+    if token_id in DEAD_TOKENS:
+        return None, 0
     book = get_json(f"{CLOB}/book", params={"token_id": token_id})
+    if book is None:                       # 404/delisted: stop retrying it
+        DEAD_TOKENS.add(token_id)
     if not book or not book.get("asks"):
         return None, 0
     top = book["asks"][-1]  # CLOB sorts asks high->low, so best (lowest) is last
@@ -146,7 +156,11 @@ def best_ask(token_id):
 
 def best_bid(token_id):
     """Highest price someone will pay for this outcome right now."""
+    if token_id in DEAD_TOKENS:
+        return None
     book = get_json(f"{CLOB}/book", params={"token_id": token_id})
+    if book is None:                       # 404/delisted: stop retrying it
+        DEAD_TOKENS.add(token_id)
     if not book or not book.get("bids"):
         return None
     return fnum(book["bids"][-1]["price"])  # bids sorted low->high, best is last
