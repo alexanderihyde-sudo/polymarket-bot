@@ -36,7 +36,7 @@
     "min_volume_24h": 1000,
     "max_dollars_per_trade": 100.0,
     "max_open_positions": 60,
-    "max_open_per_category": 16,
+    "max_open_per_category": 6,
     "lane90": {
       "enabled": true,
       "buy_price_min": 0.9,
