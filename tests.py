@@ -368,11 +368,40 @@ def test_never_zero_bets():
        and "now_mult" in tod)
 
 
+def test_scan_pairs_dup_threshold():
+    # Regression: when two markets in the same (family, end-date) group parse
+    # to the SAME threshold, scan_pairs' bare `markets.sort()` tied on the
+    # float threshold and fell through to comparing the market *dicts* ->
+    # "'<' not supported between instances of 'dict' and 'dict'", which crashed
+    # the entire scan cycle ("! recovered from error"). The sort must key on
+    # the threshold alone. (The lo_t == hi_t guard downstream proves equal
+    # thresholds are a normal, expected input — so the sort must tolerate them.)
+    dup = {"id": "111", "question": "Will BTC be above $66,000 on June 30?",
+           "volume24hr": "5000", "outcomePrices": "[\"0.5\", \"0.5\"]",
+           "clobTokenIds": "[\"t1\", \"t2\"]",
+           "endDate": "2026-06-30T00:00:00Z"}
+    dup2 = dict(dup, id="222")        # identical question => same family + thr
+
+    saved_get, saved_book = bot.get_json, bot.book_stats
+    # offset-0 page returns the colliding pair; no network, no order book
+    bot.get_json = lambda url, params=None, **k: (
+        [dup, dup2] if (params or {}).get("offset") == 0 else [])
+    bot.book_stats = lambda *a, **k: None
+    try:
+        bot.scan_pairs({"arbitrage": {}}, set())
+        ok("scan_pairs/equal-threshold pair sorts without crashing", True)
+    except TypeError as e:
+        ok(f"scan_pairs/equal-threshold pair crashes: {e}", False)
+    finally:
+        bot.get_json, bot.book_stats = saved_get, saved_book
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
-       test_adaptive_category_sizing, test_never_zero_bets)
+       test_adaptive_category_sizing, test_never_zero_bets,
+       test_scan_pairs_dup_threshold)
 
 if __name__ == "__main__":
     t0 = time.time()

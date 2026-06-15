@@ -3033,7 +3033,11 @@ def scan_pairs(cfg, skip_ids):
     for (fam, end), markets in fams.items():
         if len(markets) < 2:
             continue
-        markets.sort()
+        # sort by threshold ONLY: each element is (threshold, market_dict,
+        # tokens); a bare .sort() ties on equal thresholds and then compares
+        # the market dicts -> "'<' not supported between 'dict' and 'dict'".
+        # Equal thresholds do occur (the lo_t == hi_t guard below proves it).
+        markets.sort(key=lambda x: x[0])
         for (lo_t, lo_m, lo_tok), (hi_t, hi_m, hi_tok) in zip(markets, markets[1:]):
             if lo_t == hi_t:
                 continue
