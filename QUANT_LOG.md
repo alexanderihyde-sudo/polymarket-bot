@@ -2150,3 +2150,30 @@ PROPOSALS 2 & 4 (chartml isotonic race / raise daytrade gate to 0.60) — REJECT
 PROPOSAL 5 (persist DEAD_TOKENS cache) — REJECT. Plausible and low-risk but PnL benefit is hand-wavy (~$1-2/week, "typical scan rate") with zero measured settled-money impact. Adds disk I/O to the hot best_ask/best_bid path on the live loop for an unquantified efficiency gain — an optimization, not an edge. Doesn't beat the ship-nothing default on PnL/risk per blast radius.
 
 No proposal pairs strong measured evidence with proportional blast radius. The honest default — ship nothing — is correct this cycle.
+
+---
+
+## 2026-06-15 17:55 UTC — Cycle 6 SHIP: Fix max_dollars cap breach in Kelly sizing
+
+**Commit**: 66dc5bb — "AUTOPILOT: Fix max_dollars cap breach in Kelly sizing (move multiplier inside min())"
+**Rollback ref**: HEAD~1 = 11ce04c
+
+### What shipped
+Move `* multiplier` inside the `min()` in `scan_high_prob()` Kelly sizing (bot.py lines 5367-5370). Before: `min(max_dollars_per_trade, bankroll * risk_pct / 100) * multiplier`. After: `min(max_dollars_per_trade, bankroll * risk_pct / 100 * multiplier)`. One-line arithmetic fix ensuring max_dollars cap is never breached when global model multipliers are applied.
+
+### Evidence
+- Live paper_account.json: 1 cap breach in 21 high_prob settles (4.8% rate). Israel airspace trade at entry_price=0.98 cost $118.94, exceeding $100 cap by $18.94.
+- Root cause: model_multiplier (1.19 = size_mult * m3_bayes[high_prob].mult) was applied outside the min(), yielding $100 * 1.19 = $119 final size.
+- Counterfactual: 101 shares @ $0.98 = $100 cost, -$2.14 PnL. Actual: 120 shares = -$2.54 PnL. Difference: -$0.40 realized loss from breach.
+- Confidence: 0.92. Blast radius: MEDIUM (scan_high_prob Kelly branches only, no safety rails affected).
+
+### Expected impact
+~+$0.40 per cap-breach occurrence. ~+$0.02-0.04 per trade settled at historical breach rate. ~+$0.40-0.80/month assuming 20-25 high_prob settles/month.
+
+### Test tally
+- Settles at ship: 689 (was 517 at last cycle)
+- Pre-ship equity: $9,995.45
+- Post-restart health: ok=true, audit=balanced, age_seconds=23, procs=2
+
+### Ship result
+SHIPPED. Bot healthy post-restart. Watchdog re-armed. No rollback needed.
