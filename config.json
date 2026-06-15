@@ -62,7 +62,7 @@
     "min_hours_to_resolution": 0.03,
     "min_volume_24h": 200,
     "max_dollars_per_trade": 1.0,
-    "crypto_max_dollars_per_trade": 5.0,
+    "crypto_max_dollars_per_trade": 10.0,
     "crypto_favorite_min": 0.85,
     "max_open_positions": 200,
     "max_open_per_category": 40,
