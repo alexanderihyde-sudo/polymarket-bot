@@ -2104,16 +2104,24 @@ def _global_x(x):
     return {k: v for k, v in x.items() if k not in _CAT_X_KEYS}
 
 
-def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
+def _brain_x(strategy, price, ctx, side=None, closed=None, name=None,
+             drop_move=False):
     """One trade's entry context as a numeric feature vector.
 
     `closed` (the market resolution timestamp) is accepted for call-site
     compatibility but intentionally UNUSED: the settlement hour is unknown at
     entry, so any feature derived from it leaks future data into training. The
-    former `night`/`imb_x_night` features that read it have been removed."""
+    former `night`/`imb_x_night` features that read it have been removed.
+
+    `drop_move` is for the SHADOW-ONLY `move` ablation A/B (move_ablation_shadow)
+    and defaults False on every deployed/live/golden call, so the returned vector
+    is byte-identical to before. When True it omits the `move` dense feature and
+    its `imb_x_move` / `price_x_move` interactions, so the no-move arm of the
+    shadow trains on a consistent move-free surface. It NEVER changes the live
+    feature surface — no live caller passes it."""
     ctx = ctx or {}
     imb = ctx.get("imbalance")
-    return {
+    x = {
         "bias": 1.0,
         "price": (price or 0.5) - 0.5,
         "spread": min((ctx.get("spread") or 0.0) * 50, 2.0),
@@ -2261,6 +2269,12 @@ def _brain_x(strategy, price, ctx, side=None, closed=None, name=None):
         "ttr": min((ctx.get("hours_to_end") or 48) / 96.0, 1.5),
         "price": (price or 0.5) - 0.5,
         "move": min(abs(ctx.get("move_1h") or 0.0) * 5, 1.5)})
+    if drop_move:
+        # shadow ablation only — see the docstring. Default path never reaches
+        # here, so the live/deployed/golden vector is byte-identical.
+        for _mk in ("move", "imb_x_move", "price_x_move"):
+            x.pop(_mk, None)
+    return x
 
 
 def _fit_logistic(data, iters=300, lr=0.5, l2=0.05):
@@ -2284,22 +2298,26 @@ def _predict(w, x):
     return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, z))))
 
 
-def _settle_traits(t):
+def _settle_traits(t, drop_move=False):
     try:
-        return set(trade_features(t))
+        return set(trade_features(t, drop_move=drop_move))
     except Exception:
         return set()
 
 
-def _top_pat_feats(trades, k=5):
+def _top_pat_feats(trades, k=5, drop_move=False):
     """The miner's top-k strongest combos derived from a SPECIFIC trade list.
     Used two ways: GLOBALLY (the whole settled set) for the deployed brain, and
     — critically — FOLD-LOCALLY inside cross-validation, where `trades` is only
     a fold's TRAINING trades (data[:cut]). Mining per-fold from train data alone
     keeps the pat* feature DEFINITIONS from ever seeing a holdout outcome.
     dead_cohort filtering and the 14-day recency window are preserved untouched:
-    mine_patterns owns both and receives the trade list verbatim."""
-    mined = mine_patterns({"settled": trades}, min_n=8)
+    mine_patterns owns both and receives the trade list verbatim.
+
+    `drop_move` (SHADOW ablation only, default False) drops the `move=up/down`
+    miner token so the no-move shadow arm mines pat* combos over the same
+    move-free surface as its _brain_x dense features."""
+    mined = mine_patterns({"settled": trades}, min_n=8, drop_move=drop_move)
     return [m["pattern"] for m in
             sorted(mined, key=lambda m: -abs(m["pnl"]))[:k]]
 
@@ -2318,7 +2336,7 @@ def _add_pat_feats(x, traits, pat_feats):
     return x
 
 
-def brain_train(account):
+def brain_train(account, drop_move=False, force=False):
     """Brain 3.0 — four multipliers stacked:
     (1) AUTO FEATURE ENGINEERING: the pattern miner's strongest discovered
         combos become binary input features — one learner invents the
@@ -2327,20 +2345,35 @@ def brain_train(account):
         skill estimate and model selection — five verdicts, not one;
     (3) hyperparameter search: L2 strength chosen by CV every retrain;
     (4) temporal prior: each fit is pulled toward the previous brain, so
-        knowledge accumulates instead of resetting (online learning)."""
+        knowledge accumulates instead of resetting (online learning).
+
+    Two SHADOW-ONLY parameters, both default-off so every deployed call
+    (run_pass: `BRAIN.update(brain_train(account))`) and every golden fixture is
+    byte-identical:
+    - `drop_move`: build the feature surface WITHOUT the `move` family — the
+      _brain_x `move` key, its `imb_x_move`/`price_x_move` interactions, AND the
+      `move=` miner token (threaded into the global + fold-local pattern mining
+      and the trait sets). The no-move arm of move_ablation_shadow trains and
+      cross-validates on this consistent move-free surface.
+    - `force`: bypass the deploy cache so a shadow A/B always recomputes both
+      arms fresh on the current rows (the cache is keyed on row count, which the
+      ablation does not change). Live calls never set it.
+    Neither parameter mutates global BRAIN, any file, or the live feature
+    surface; brain_train only RETURNS a dict (the caller deploys it)."""
     # GLOBAL pattern features for the DEPLOYED brain: the final models are fit
     # on ALL rows, where there is no holdout to leak into, so mining the top-5
     # combos from the whole settled set is correct HERE. The cross-validation
     # below re-mines them FOLD-LOCALLY (train trades only) so the skill estimate
     # is not inflated by in-sample feature selection.
-    pat_feats = _top_pat_feats(account["settled"])
+    pat_feats = _top_pat_feats(account["settled"], drop_move=drop_move)
     rows = []
     for t in account["settled"]:
         if t["strategy"] == "arbitrage" or dead_cohort(t):
             continue
         x = _brain_x(t["strategy"], t.get("entry_price"), t.get("context"),
-                     t.get("side"), t.get("closed"), t.get("name"))
-        traits = _settle_traits(t)
+                     t.get("side"), t.get("closed"), t.get("name"),
+                     drop_move=drop_move)
+        traits = _settle_traits(t, drop_move=drop_move)
         _add_pat_feats(x, traits, pat_feats)   # GLOBAL pats for the final fit
         rows.append((x, 1.0 if t["pnl"] >= 0 else 0.0, t["strategy"],
                      cat_key(t.get("category")), t, traits))
@@ -2351,7 +2384,8 @@ def brain_train(account):
            "oos": None, "skill_factor": 0.5, "pat_feats": pat_feats}
     if len(rows) < 10:
         return out
-    if (BRAIN.get("n") == len(rows) and BRAIN.get("w")
+    if (not force and not drop_move
+            and BRAIN.get("n") == len(rows) and BRAIN.get("w")
             # a BRAIN cached before the per-category layer existed has no
             # cat_specialists key: it MUST retrain so the category layer is
             # populated, otherwise the new code would silently never engage.
@@ -2397,7 +2431,8 @@ def brain_train(account):
         if _hi - _cut < 5:
             continue
         cv_folds.append((_cut, _hi,
-                         _top_pat_feats([t for t, _tr in cv_meta[:_cut]])))
+                         _top_pat_feats([t for t, _tr in cv_meta[:_cut]],
+                                        drop_move=drop_move)))
 
     def cv_generic(fit_fn, pred_fn):
         """Expanding-window CV with FOLD-LOCAL pattern mining (see cv_folds):
@@ -2585,7 +2620,8 @@ def brain_train(account):
             hi = cut + max(1, n // k)
             if min(n, hi) - cut < 5:
                 continue
-            pats = _top_pat_feats([t for t, _tr in cmeta[:cut]])
+            pats = _top_pat_feats([t for t, _tr in cmeta[:cut]],
+                                  drop_move=drop_move)
             tr = [(_add_pat_feats(dict(cbases[i]), cmeta[i][1], pats),
                    ylist[i]) for i in range(cut)]
             hold = [(_add_pat_feats(dict(cbases[i]), cmeta[i][1], pats),
@@ -2629,6 +2665,175 @@ def brain_train(account):
             "n": len(cdata),
         }
     return out
+
+
+# --------------------------- SHADOW: `move` feature ablation A/B (measurement)
+# Measurement ONLY — never promotion. The deployed feature surface is untouched.
+# This recomputes the brain's cross-validated CHAMPION cv_skill on the SAME
+# settled rows twice — with the live `move` family present (control) and with it
+# removed (variant) — and logs both with the full per-zoo breakdown, so the
+# delta from dropping `move` can be watched accrue over several training cycles
+# before anyone decides. The rejected TRAINER proposal argued from the global
+# LOGISTIC's -0.2080 weight on `move`; but the logistic is only ~12.5% of the
+# deployed 8-model stack and is NOT the champion (xgb-reg). This measures the
+# thing that actually matters: what dropping `move` does to the CHAMPION's OOS
+# skill — the out-of-sample A/B the proposal never had.
+MOVE_SHADOW_FILE = HERE / "move_shadow.json"
+
+_MOVE_SHADOW_DOC = (
+    "SHADOW-ONLY move-ablation A/B — measurement, NEVER promotion. Each history "
+    "row recomputes the brain's CV champion cv_skill on the same settled rows "
+    "with the live `move` family present (control) vs removed (variant: the "
+    "_brain_x `move` key + its imb_x_move/price_x_move interactions + the "
+    "`move=` miner token feeding pat0-pat4). delta_control_champion is the "
+    "decision number: variant minus control cv_skill for the SAME (control) "
+    "champion model — negative => dropping `move` HURTS the champion. Watch it "
+    "accrue across cycles; this file deploys nothing.")
+
+
+def _shared_lock_state(ttl=900):
+    """(owner, age_seconds) of the AUTOPILOT/TRAINER shared .autopilot_lock, or
+    (None, None) if absent/unreadable. A lock younger than `ttl` (the fleet's
+    900s staleness horizon) marks an ACTIVE cycle this measurement must defer
+    to; the owner tag is the text before the first ':'."""
+    lock = HERE / ".autopilot_lock"
+    try:
+        if not lock.exists():
+            return None, None
+        age = time.time() - lock.stat().st_mtime
+        owner = (lock.read_text().split(":", 1)[0] or "").strip()
+        return owner, age
+    except OSError:
+        return None, None
+
+
+def _deployed_cv_skill():
+    """The LIVE deployed champion cv_skill, for a sanity tie-out against the
+    freshly-recomputed control arm. Prefer the in-memory BRAIN (populated in the
+    running daemon); fall back to the on-disk brain.json so a standalone CLI /
+    cron run still gets the deployed reference instead of null."""
+    oos = BRAIN.get("oos")
+    if oos and oos.get("cv_skill") is not None:
+        return oos.get("cv_skill")
+    try:
+        b = json.loads(BRAIN_FILE.read_text())
+        return (b.get("oos") or {}).get("cv_skill")
+    except (OSError, ValueError):
+        return None
+
+
+def move_ablation_shadow(account, write=True):
+    """Compute the brain's CV champion cv_skill twice on the SAME rows — control
+    (live `move` surface) vs variant (move removed) — and record both with the
+    full per-zoo breakdown. Returns the record dict.
+
+    Faithful by construction: both arms call the DEPLOYED brain_train with
+    force=True (recompute, bypassing the deploy cache), so the only difference
+    between them is the `move` feature surface — identical rows, identical fold
+    geometry, identical zoo race, identical fold-local pattern mining. TRAINER
+    hard rules honored verbatim: paper-only (reads the paper account, places no
+    order); NO future-data leakage (reuses brain_train's point-in-time features
+    and fold-local mining unchanged — drop_move only REMOVES a feature, never
+    adds a forward-looking one); dead_cohort + 14-day hygiene preserved
+    (brain_train/mine_patterns drop arbitrage + dead_cohort identically in both
+    arms); never reads .env. Does NOT mutate global BRAIN, config, or any live
+    model — pure measurement."""
+    control = brain_train(account, force=True)                 # `move` present
+    variant = brain_train(account, force=True, drop_move=True)  # `move` removed
+
+    def _arm(bt):
+        oos = bt.get("oos") or {}
+        return {"champion": bt.get("kind"),
+                "cv_skill": oos.get("cv_skill"),
+                "l2": oos.get("l2"),
+                "zoo": oos.get("zoo") or {}}
+
+    c, v = _arm(control), _arm(variant)
+    cc = c["champion"]                       # the deployed / control champion
+    c_cc = c["zoo"].get(cc)                  # its cv_skill WITH move
+    v_cc = v["zoo"].get(cc)                  # its cv_skill WITHOUT move
+    rec = {
+        "t": now_utc().isoformat(timespec="seconds"),
+        "n": control.get("n"), "n_eff": control.get("n_eff"),
+        "control": c, "variant": v,
+        "control_champion": cc,
+        # delta on each ARM's own best champion (the arms may crown different
+        # models): variant best minus control best.
+        "delta_best": (round(v["cv_skill"] - c["cv_skill"], 4)
+                       if v["cv_skill"] is not None
+                       and c["cv_skill"] is not None else None),
+        # THE decision number — same model (the control champion), move removed:
+        # negative => dropping `move` lowers the champion's OOS skill.
+        "delta_control_champion": (round(v_cc - c_cc, 4)
+                                   if v_cc is not None and c_cc is not None
+                                   else None),
+        # sanity tie-out: the LIVE deployed cv_skill (in-memory BRAIN or
+        # brain.json). The fresh control arm should track it closely (same
+        # rows, same pipeline) — a large gap flags a measurement drift.
+        "deployed_cv_skill": _deployed_cv_skill(),
+    }
+    if write:
+        try:
+            doc = {"shadow": _MOVE_SHADOW_DOC, "history": []}
+            if MOVE_SHADOW_FILE.exists():
+                loaded = json.loads(MOVE_SHADOW_FILE.read_text())
+                if isinstance(loaded, dict):
+                    doc = loaded
+            doc["shadow"] = _MOVE_SHADOW_DOC
+            doc.setdefault("history", []).append(rec)
+            doc["history"] = doc["history"][-2000:]
+            doc["updated"] = rec["t"]
+            atomic_write(MOVE_SHADOW_FILE, json.dumps(doc, indent=1))
+        except (OSError, ValueError):
+            pass
+    return rec
+
+
+def move_shadow_command(account):
+    """CLI entry for the move-ablation shadow, coordinated with the fleet's
+    shared lock EXACTLY like the AUTOPILOT/TRAINER workflows. If another loop
+    holds .autopilot_lock fresh (<900s), DEFER and measure nothing this run, so
+    the measurement never runs concurrently with AUTOPILOT/TRAINER. Otherwise
+    claim the lock under our own `movesh` tag (so a fleet cycle that wakes
+    mid-measurement defers to us — the fleet only removes a lock whose tag is
+    its own), run one ablation pass, then release it. The lock is held only for
+    the measurement's own runtime."""
+    owner, age = _shared_lock_state()
+    if owner and owner != "movesh" and age is not None and age < 900:
+        print(f"move-shadow: DEFERRED — '{owner}' holds .autopilot_lock "
+              f"(age {int(age)}s < 900s). Measuring nothing this run.")
+        return
+    lock = HERE / ".autopilot_lock"
+    try:
+        atomic_write(lock, f"movesh:{int(time.time())}")
+    except OSError:
+        print("move-shadow: could not acquire .autopilot_lock; aborting.")
+        return
+    try:
+        rec = move_ablation_shadow(account)
+    finally:
+        try:
+            if lock.exists() and lock.read_text().startswith("movesh:"):
+                lock.unlink()
+        except OSError:
+            pass
+    if rec["control"]["cv_skill"] is None:
+        print(f"move-shadow: not enough settled data yet (n={rec.get('n')}); "
+              f"the zoo race needs >=40 non-arb, non-dead rows. Recorded the "
+              f"row to {MOVE_SHADOW_FILE.name} anyway.")
+        return
+    print(json.dumps({k: rec[k] for k in (
+        "t", "n", "n_eff", "control_champion", "delta_control_champion",
+        "delta_best", "deployed_cv_skill")}, indent=1))
+    print(f"  control  champ={str(rec['control']['champion']):>10}  "
+          f"cv_skill={rec['control']['cv_skill']}")
+    print(f"  variant  champ={str(rec['variant']['champion']):>10}  "
+          f"cv_skill={rec['variant']['cv_skill']}")
+    print(f"  champion '{rec['control_champion']}'  "
+          f"with move={rec['control']['zoo'].get(rec['control_champion'])}  "
+          f"without move={rec['variant']['zoo'].get(rec['control_champion'])}  "
+          f"(delta {rec['delta_control_champion']})")
+    print(f"  -> {MOVE_SHADOW_FILE.name} (shadow-only; nothing deployed)")
 
 
 def brain_adjust(strategy, price, ctx, side=None, category=None):
@@ -4786,8 +4991,14 @@ PATTERNS_FILE = HERE / "patterns.json"
 PATTERN_VETOES = {"list": []}   # refreshed each pass, read at entry time
 
 
-def trade_features(t):
-    """Describe one trade as categorical features the miner can combine."""
+def trade_features(t, drop_move=False):
+    """Describe one trade as categorical features the miner can combine.
+
+    `drop_move` (SHADOW ablation only, default False) suppresses the `move=`
+    token so the no-move arm of the brain_train shadow A/B mines patterns over a
+    move-free surface consistent with its move-stripped _brain_x. Every live
+    caller (the miner, vetoes, brain probes) uses the default, so the mined
+    pattern space is byte-identical to before."""
     ctx = t.get("context") or {}
     f = ["strat=" + t["strategy"], "cluster=" + cluster_of(t.get("name"))]
     if t.get("category"):
@@ -4808,7 +5019,7 @@ def trade_features(t):
     if ctx.get("imbalance") is not None:
         f.append("imb=" + ("buy" if ctx["imbalance"] > 0.6
                            else "sell" if ctx["imbalance"] < 0.4 else "mid"))
-    if ctx.get("move_1h") is not None:
+    if ctx.get("move_1h") is not None and not drop_move:
         f.append("move=" + ("up" if ctx["move_1h"] > 0 else "down"))
     if ctx.get("hours_to_end") is not None:
         f.append("ttr=" + ("<24h" if ctx["hours_to_end"] < 24
@@ -4830,11 +5041,16 @@ def trade_features(t):
     return f
 
 
-def mine_patterns(account, min_n=10, days=14):
+def mine_patterns(account, min_n=10, days=14, drop_move=False):
     """Model 11 — search every single feature AND every feature pair across
     settled trades for combinations that reliably lose. Complex patterns
     (e.g. 'No-side sports trades entered on down-moves') emerge here that
-    no single filter can see."""
+    no single filter can see.
+
+    `drop_move` (SHADOW ablation only, default False) is threaded to
+    trade_features so the no-move shadow arm mines over a move-free token set.
+    The dead_cohort filter and the `days` recency window below are unchanged in
+    BOTH arms — the ablation removes one token, never an era-hygiene rule."""
     from itertools import combinations
     stats = {}
     cutoff = (now_utc() - timedelta(days=days)).isoformat(timespec="seconds")
@@ -4842,7 +5058,7 @@ def mine_patterns(account, min_n=10, days=14):
         if (t["strategy"] == "arbitrage" or t.get("closed", "") < cutoff
                 or dead_cohort(t)):
             continue  # markets adapt — only the last 2 weeks define a veto
-        feats = sorted(trade_features(t))
+        feats = sorted(trade_features(t, drop_move=drop_move))
         win = 1 if t["pnl"] >= 0 else 0
         for r in (1, 2):
             for combo in combinations(feats, r):
@@ -7908,6 +8124,64 @@ def self_test():
        bt_retrain.get("cat_specialists"))
     BRAIN.clear(); BRAIN.update(saved_for_cat)
 
+    # ---- SHADOW `move` ablation A/B (measurement only) regression guard ------
+    # The shadow recomputes champion cv_skill with vs without the `move` family.
+    # Hard invariants: (a) drop_move removes EXACTLY the move family from the
+    # dense feature AND the miner-token surfaces, nothing else; (b) the DEFAULT
+    # path is byte-identical (the live surface is untouched); (c) the A/B is
+    # deterministic and touches neither global BRAIN nor disk when write=False.
+    _mv_ctx = {"imbalance": 0.9, "spread": 0.01, "hours_to_end": 12,
+               "momentum_6h": 0.02, "move_1h": 0.2}
+    bx_full = _brain_x("news", 0.6, _mv_ctx, "Yes")
+    bx_drop = _brain_x("news", 0.6, _mv_ctx, "Yes", drop_move=True)
+    ok("move-shadow: drop_move removes EXACTLY the move family from _brain_x",
+       set(bx_full) - set(bx_drop) == {"move", "imb_x_move", "price_x_move"}
+       and set(bx_drop) < set(bx_full))
+    ok("move-shadow: drop_move leaves every other _brain_x feature byte-identical",
+       all(bx_drop[k] == bx_full[k] for k in bx_drop))
+    ok("move-shadow: _brain_x default == drop_move=False (live surface untouched)",
+       _brain_x("news", 0.6, _mv_ctx, "Yes")
+       == _brain_x("news", 0.6, _mv_ctx, "Yes", drop_move=False))
+    _mv_trade = {"strategy": "news", "name": "x", "entry_price": 0.6,
+                 "side": "Yes", "context": _mv_ctx}
+    tf_full = set(trade_features(_mv_trade))
+    tf_drop = set(trade_features(_mv_trade, drop_move=True))
+    ok("move-shadow: drop_move removes ONLY the move= miner token",
+       tf_full - tf_drop == {"move=up"} and tf_drop < tf_full)
+    ok("move-shadow: trade_features default == drop_move=False (miner unchanged)",
+       set(trade_features(_mv_trade))
+       == set(trade_features(_mv_trade, drop_move=False)))
+    # the A/B itself on a fixture with a real `move` surface and >=40 rows.
+    _mv_fix = {"settled": [
+        {"strategy": "news", "pnl": (1.0 if i % 2 == 0 else -1.0),
+         "entry_price": 0.5, "side": "Yes",
+         "closed": "2026-06-11T%02d:00:00+00:00" % (i % 24),
+         "name": "shadow-mkt-%d" % i,
+         "context": {"imbalance": (0.9 if i % 2 == 0 else 0.1), "spread": 0.01,
+                     "hours_to_end": 12,
+                     "move_1h": (0.03 if i % 3 == 0 else -0.02)}}
+        for i in range(60)]}
+    _mv_saved = dict(BRAIN)
+    _mv_before = json.dumps(BRAIN, sort_keys=True, default=str)
+    _mv_existed = MOVE_SHADOW_FILE.exists()
+    rec1 = move_ablation_shadow(_mv_fix, write=False)
+    rec2 = move_ablation_shadow(_mv_fix, write=False)
+    _mv_after = json.dumps(BRAIN, sort_keys=True, default=str)
+    BRAIN.clear(); BRAIN.update(_mv_saved)
+    ok("move-shadow: both arms produce a numeric champion cv_skill (>=40 rows)",
+       isinstance(rec1["control"]["cv_skill"], float)
+       and isinstance(rec1["variant"]["cv_skill"], float))
+    ok("move-shadow: A/B deterministic (same rows -> identical cv_skill)",
+       rec1["control"]["cv_skill"] == rec2["control"]["cv_skill"]
+       and rec1["variant"]["cv_skill"] == rec2["variant"]["cv_skill"])
+    ok("move-shadow: records both per-zoo breakdowns + the control champion",
+       bool(rec1["control"]["zoo"]) and bool(rec1["variant"]["zoo"])
+       and rec1["control_champion"] in rec1["control"]["zoo"])
+    ok("move-shadow: measurement does NOT mutate global BRAIN",
+       _mv_after == _mv_before)
+    ok("move-shadow: write=False writes no file (pure read)",
+       MOVE_SHADOW_FILE.exists() == _mv_existed)
+
     random.seed(42)
     tset = {"settled": [{"strategy": "explore", "pnl": 0.1, "entry_price": 0.9,
                          "category": "Crypto"}] * 12
@@ -8532,6 +8806,10 @@ def main():
         print(json.dumps({"scorecard": sc,
                           "module_selftest": "run: python3 crossmarket.py"},
                          indent=1))
+    elif cmd == "move-shadow":
+        # SHADOW-ONLY: champion cv_skill with vs without the `move` feature
+        # family. Lock-coordinated, deploys nothing. See move_ablation_shadow.
+        move_shadow_command(account)
     elif cmd == "patterns":
         compute_patterns(account)
         print(PATTERNS_FILE.read_text())

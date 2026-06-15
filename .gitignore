@@ -50,3 +50,4 @@ trainer_state.json
 .autopilot_lock
 watchdog.launchd.log
 snipe_shadow.json
+move_shadow.json
