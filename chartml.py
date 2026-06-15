@@ -102,6 +102,13 @@ def build_move_events(series, move=0.03, window_s=900, horizon_s=1800,
     information leaks into x. Returns events sorted by time."""
     events = []
     for key, pts in series.items():
+        # Resample to the SAME 30s bars the inference path scores on
+        # (move_predict -> chart_x(_bars(pts))). Do it once, up front, so
+        # event detection, the horizon_s cooldown, the index-based j-360
+        # lookback AND the chart_x features all run on training cadence ==
+        # serve cadence. Aligning only the feature slice would leave
+        # detection/cooldown/lookback on raw ticks and create a new skew.
+        pts = _bars(pts)
         n = len(pts)
         if n < 30:
             continue
