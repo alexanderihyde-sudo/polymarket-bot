@@ -69,6 +69,11 @@
     "max_spread": 0.04,
     "min_book_imbalance": 0.0
   },
+  "learning": {
+    "protected_categories": [
+      "Crypto"
+    ]
+  },
   "allocations": {
     "arbitrage": 3000.0,
     "high_prob": 5250.0,

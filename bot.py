@@ -770,8 +770,17 @@ def compute_learning(account):
                 c["pnl"] = round(c["pnl"] + s["pnl"], 2)
             blocked = sorted(b for b, v in bands.items()
                              if v["n"] >= 6 and v["pnl"] < 0)
+            # Owner-protected categories never auto-pause on the cat block:
+            # the n>=6 & pnl<0 rule is a hair-trigger that benches a category
+            # over a single cent of noise (Crypto tripped it at -$0.16 despite
+            # 81% win / +$18.77 lifetime). Protected cats are exempted by
+            # explicit config choice; the bankroll-level breaker + auto-rollback
+            # remain the real backstop. Reversible: empty the config list.
+            protected = set(load_config().get("learning", {})
+                            .get("protected_categories", []))
             blocked_cats = sorted(c for c, v in cats.items()
-                                  if v["n"] >= 6 and v["pnl"] < 0)
+                                  if v["n"] >= 6 and v["pnl"] < 0
+                                  and c not in protected)
 
         out[strat] = {"settled": n, "wins": wins,
                       "total_pnl": round(total_pnl, 2),

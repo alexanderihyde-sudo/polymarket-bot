@@ -297,10 +297,34 @@ def test_crypto_explore_stake():
                                 1.0, BANK) == 1.0)
 
 
+def test_protected_category():
+    # Owner-protected categories are exempt from the n>=6 & pnl<0 auto-block;
+    # unprotected categories with the same negative cohort still block.
+    import datetime
+    recent = (bot.now_utc() - datetime.timedelta(days=1)).isoformat(
+        timespec="seconds")
+
+    def mk(cat, pnl):
+        return {"strategy": "explore", "pnl": pnl, "entry_price": 0.90,
+                "category": cat, "closed": recent, "context": {}}
+
+    settled = []
+    for cat in ("Crypto", "Politics"):          # both net -0.50 over n=8 material
+        settled += [mk(cat, +0.20)] * 5
+        settled += [mk(cat, -0.50)] * 3
+    exp = bot.compute_learning(
+        {"settled": settled, "cash": 9000.0, "positions": []})["explore"]
+    ok("protected/crypto exempt despite negative cohort",
+       "Crypto" not in exp["blocked_categories"])
+    ok("protected/unprotected category still auto-blocks",
+       "Politics" in exp["blocked_categories"])
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
-       test_risk_and_money, test_oracles, test_crypto_explore_stake)
+       test_risk_and_money, test_oracles, test_crypto_explore_stake,
+       test_protected_category)
 
 if __name__ == "__main__":
     t0 = time.time()
