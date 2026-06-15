@@ -166,6 +166,21 @@ def best_bid(token_id):
     return fnum(book["bids"][-1]["price"])  # bids sorted low->high, best is last
 
 
+def ask_levels_for(token_id):
+    """Full ask-side depth for a token: [(price, size), ...] best (lowest)
+    first, or None. Mirrors best_ask's dead-token caching. Lets the arb
+    scanner price a basket on the depth it would actually walk, not a single
+    top-of-book quote that lies for any real order size."""
+    if token_id in DEAD_TOKENS:
+        return None
+    book = get_json(f"{CLOB}/book", params={"token_id": token_id})
+    if book is None:                       # 404/delisted: stop retrying it
+        DEAD_TOKENS.add(token_id)
+        return None
+    pb = _parse_book(book)
+    return pb["ask_levels"] if pb and pb["ask_levels"] else None
+
+
 def _parse_book(book, levels=5):
     if not book or not book.get("asks") or not book.get("bids"):
         return None
@@ -503,6 +518,48 @@ def vwap_fill(ask_levels, shares):
         if left <= 0:
             return round(cost / shares, 4)
     return None
+
+
+def _basket_vwap(leg_levels, shares):
+    """Sum of the per-leg VWAP fill prices to buy `shares` of EVERY leg.
+    None if any leg lacks the depth to fill `shares` — the basket is then
+    not executable at that size."""
+    total = 0.0
+    for levels in leg_levels:
+        f = vwap_fill(levels, shares)
+        if f is None:
+            return None
+        total += f
+    return total
+
+
+def arb_size_basket(leg_levels, min_edge_cents, max_cost):
+    """Largest share count to buy one share of every leg such that the
+    DEPTH-AWARE basket VWAP-sum stays below $1 by >= min_edge_cents AND the
+    basket cost stays within max_cost. Returns (shares, vwap_sum), or
+    (0, None) when no size is a genuine locked arb — i.e. a top-of-book
+    mirage (sum of top asks < $1 but the book legs out above $1 at size) or a
+    book too thin to fill. The basket VWAP-sum is monotone non-decreasing in
+    size, so the feasible sizes form a prefix — binary search for the largest.
+    This NEVER manufactures a directional position: it only shrinks, rejects,
+    or cleanly sizes an already-hedged negRisk basket."""
+    if not leg_levels or any(not lv for lv in leg_levels):
+        return 0, None
+    thresh = 1.0 - min_edge_cents / 100        # basket must fill at <= this
+    top_sum = sum(lv[0][0] for lv in leg_levels)
+    if top_sum > thresh:
+        return 0, None                         # not even top-of-book is an arb
+    depth_cap = min(sum(sz for _, sz in lv) for lv in leg_levels)
+    hi = int(min(depth_cap, max_cost / max(top_sum, 0.01)))
+    lo, shares, total = 1, 0, None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        vsum = _basket_vwap(leg_levels, mid)
+        if vsum is not None and vsum <= thresh and mid * vsum <= max_cost:
+            shares, total, lo = mid, vsum, mid + 1   # feasible — try bigger
+        else:
+            hi = mid - 1
+    return (shares, total) if shares >= 1 else (0, None)
 
 
 def parse_end_date(market):
@@ -1524,37 +1581,49 @@ def scan_arbitrage(cfg, skip_ids, multiplier=1.0):
         if rough > 1.02:
             continue
 
-        # Confirm against live orderbooks.
-        legs, total, min_size, ok = [], 0.0, float("inf"), True
+        # Confirm against live orderbooks — price each leg on the DEPTH we'd
+        # actually walk (VWAP), not a single top-of-book quote. A basket that
+        # sums to < $1 at top-of-book routinely legs out above $1 once the
+        # books are walked at size, which books fictional locked profit.
+        # arb_size_basket sizes to the largest count where the depth-aware
+        # basket still clears $1 — rejecting mirages, sizing bigger where the
+        # depth genuinely supports it (TaskList #2 fill-realism).
+        leg_levels, meta, ok = [], [], True
         for m in markets:
             tokens = jlist(m.get("clobTokenIds"))
             if not tokens:
                 ok = False
                 break
-            price, size = best_ask(tokens[0])  # token 0 = YES
-            if price is None or size <= 0:
+            levels = ask_levels_for(tokens[0])  # token 0 = YES, full depth
+            if not levels:
                 ok = False
                 break
-            legs.append({"market_id": str(m["id"]), "question": m["question"],
-                         "token_index": 0, "token_id": tokens[0], "price": price})
-            total += price
-            min_size = min(min_size, size)
+            leg_levels.append(levels)
+            meta.append((m, tokens[0]))
             time.sleep(0.05)  # books are only fetched for near-arb events
+        if not ok:
+            continue
+
+        shares, total = arb_size_basket(leg_levels, acfg["min_edge_cents"],
+                                        max_cost)
+        if shares < 1 or total is None:
+            continue  # no size clears $1 at real depth — a top-of-book mirage
 
         edge = 1.0 - total
-        if ok and edge >= acfg["min_edge_cents"] / 100:
-            shares = int(min(min_size, max_cost / total))
-            if shares >= 1:
-                opportunities.append({
-                    "strategy": "arbitrage",
-                    "event_id": str(event["id"]),
-                    "name": event.get("title", "?"),
-                    "legs": legs, "shares": shares,
-                    "cost": round(shares * total, 2),
-                    "entry_price": round(total, 3),
-                    "detail": f"{shares} shares of all {len(legs)} outcomes, "
-                              f"locked profit ${shares * edge:.2f}",
-                })
+        legs = [{"market_id": str(m["id"]), "question": m["question"],
+                 "token_index": 0, "token_id": tid,
+                 "price": round(vwap_fill(lv, shares), 4)}
+                for (m, tid), lv in zip(meta, leg_levels)]
+        opportunities.append({
+            "strategy": "arbitrage",
+            "event_id": str(event["id"]),
+            "name": event.get("title", "?"),
+            "legs": legs, "shares": shares,
+            "cost": round(shares * total, 2),
+            "entry_price": round(total, 3),
+            "detail": f"{shares} shares of all {len(legs)} outcomes, "
+                      f"locked profit ${shares * edge:.2f} (vwap-depth)",
+        })
     return opportunities
 
 
@@ -6948,6 +7017,21 @@ def self_test():
     ok("vwap walks the book", vwap_fill([(0.5, 10), (0.6, 10)], 15) ==
        round((10 * .5 + 5 * .6) / 15, 4))
     ok("vwap thin book = None", vwap_fill([(0.5, 5)], 10) is None)
+
+    # arb fill-realism (TaskList #2): a booked basket must clear $1 at the
+    # depth actually filled, never at a top-of-book mirage.
+    _deep = [[(0.45, 1000)], [(0.45, 1000)]]            # 0.90 at any size
+    _sh, _vs = arb_size_basket(_deep, 1.5, 4000)
+    ok("arb: deep real basket accepted under $1",
+       _sh >= 1 and _vs is not None and _vs <= 0.985)
+    _mirage = [[(0.49, 3), (0.80, 1000)], [(0.49, 3), (0.80, 1000)]]
+    _msh, _mvs = arb_size_basket(_mirage, 1.5, 4000)   # top 0.98, walks to 1.6
+    ok("arb: thin-top mirage sized to real depth only, still < $1",
+       _msh <= 3 and (_mvs is None or _mvs <= 0.985))
+    _over = [[(0.50, 1000)], [(0.50, 1000)]]           # top-sum 1.00, no edge
+    ok("arb: non-arb basket rejected", arb_size_basket(_over, 1.5, 4000)[0] == 0)
+    ok("arb: empty/thin leg rejected",
+       arb_size_basket([[(0.4, 1000)], []], 1.5, 4000)[0] == 0)
 
     q = {"kelly_fraction": 0.25}
     ok("kelly: no edge = $0", kelly_dollars(1000, 0.97, 96, {"96": (51, 52)}, q) == 0)
