@@ -5367,7 +5367,7 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                    min(hcfg["max_dollars_per_trade"],
                        bankroll * hcfg.get("risk_per_trade_pct",
                            cfg.get("bankroll", {}).get(
-                               "risk_per_trade_pct", 1.0)) / 100) * multiplier)
+                               "risk_per_trade_pct", 1.0)) / 100 * multiplier))
     # risk-per-trade: a hold-to-resolution binary risks its full stake, so
     # the stake itself is capped at ~1% of current bankroll
     cat_cap = hcfg.get("max_open_per_category", 999)
