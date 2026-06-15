@@ -46,7 +46,7 @@
       "size_factor": 0.5,
       "_evidence": "research +3.8..11.1%/$1 (2 runs), replay sports 1901/1901, live explorer resolutions; kill if by_lane r90 negative over 15+ effective settles"
     },
-    "skip_crypto_threshold": true,
+    "skip_crypto_threshold": false,
     "sports_probe": {
       "enabled": true,
       "budget": 50,
