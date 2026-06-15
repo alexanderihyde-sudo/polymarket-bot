@@ -265,10 +265,42 @@ def test_oracles():
        bot.whale_verdict(None, 0) is None)
 
 
+def test_crypto_explore_stake():
+    # Bounded crypto-favorite scale-up: explore lane lifts the flat $1 stake
+    # for crypto favorites (0.85+) only — never coinflips or non-crypto.
+    hcfg = {"max_dollars_per_trade": 1.0,
+            "crypto_max_dollars_per_trade": 5.0,
+            "crypto_favorite_min": 0.85}
+    MAX, BANK = 1.0, 9000.0
+
+    def stake(cat, q, price):
+        return bot.crypto_explore_stake(hcfg, cat, q, price, MAX, BANK)
+
+    ok("crypto/favorite 0.90 scales to $5",
+       stake("Crypto", "Bitcoin Up or Down - June 14, 8PM ET", 0.90) == 5.0)
+    ok("crypto/threshold favorite 0.86 scales to $5",
+       stake("Crypto", "Will BTC be above $100,000 on June 14?", 0.86) == 5.0)
+    ok("crypto/coinflip 0.50 stays $1 (not scaled)",
+       stake("Crypto", "Bitcoin Up or Down - June 14, 8PM ET", 0.50) == 1.0)
+    ok("crypto/mid 0.80 below band stays $1",
+       stake("Crypto", "Ethereum Up or Down - June 14", 0.80) == 1.0)
+    ok("crypto/non-crypto favorite untouched at $1",
+       stake("Sports", "Will the Lakers win tonight?", 0.90) == 1.0)
+    ok("crypto/detected via question text when category misses",
+       stake("Other", "Will Bitcoin close above $90k?", 0.92) == 5.0)
+    ok("crypto/stake never exceeds bankroll",
+       bot.crypto_explore_stake(
+           {"crypto_max_dollars_per_trade": 5.0, "crypto_favorite_min": 0.85},
+           "Crypto", "Bitcoin Up or Down", 0.90, 1.0, 2.5) == 2.5)
+    ok("crypto/disabled when stake==max (no config)",
+       bot.crypto_explore_stake({}, "Crypto", "Bitcoin Up or Down", 0.90,
+                                1.0, BANK) == 1.0)
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
-       test_risk_and_money, test_oracles)
+       test_risk_and_money, test_oracles, test_crypto_explore_stake)
 
 if __name__ == "__main__":
     t0 = time.time()

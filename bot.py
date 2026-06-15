@@ -4947,6 +4947,32 @@ def is_crypto_threshold(q):
         re.search(r"\$[\d,]+|above|below|between|reach|dip", ql))
 
 
+def crypto_explore_stake(hcfg, category, question, price, max_dollars, bankroll):
+    """Crypto-favorite scale-up for the explore lane.
+
+    Crypto's structural edge (favorites priced ~11.4% loss-implied yet
+    realizing ~6.8% — a real ~4.6pp price-bias edge) was stranded at the $1
+    flat explore stake: median crypto bet $0.89 on a $10k book, 416 of 417
+    crypto trades being explore pennies. This lifts the stake for crypto
+    FAVORITES only — the 0.85+ band where the near-lock structural mispricing
+    lives — and never the ~0.50 up/down coinflips (brain crypto oos_skill ~0;
+    their 90%+ win rate is unproven at size on thin 15-min books).
+
+    Returns the (possibly larger) stake. Bounded by crypto_max_dollars_per_trade
+    and bankroll; gated by crypto_favorite_min. Both config-driven and
+    hot-reloadable — set crypto_max_dollars_per_trade == max_dollars to disable.
+    The by_category ROI panel is the kill switch."""
+    if price < hcfg.get("crypto_favorite_min", 0.85):
+        return max_dollars
+    ql = (question or "").lower()
+    is_crypto = (cat_key(category) == "crypto"
+                 or cluster_of(question or "") == "crypto-price"
+                 or any(w in ql for w in _CRYPTO_IDS))
+    if not is_crypto:
+        return max_dollars
+    return min(hcfg.get("crypto_max_dollars_per_trade", max_dollars), bankroll)
+
+
 def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                    blocked_bands=(), blocked_categories=(), category_counts=None,
                    bankroll=0.0, band_stats=None, section="high_probability",
@@ -5119,6 +5145,12 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         # category drives both the per-category brain specialist (point-in-time,
         # threaded — not recomputed at sizing) and the sports gating below.
         category = market_category(m)
+        # Crypto-favorite scale-up (explore lane only): lift the flat $1 stake
+        # for crypto favorites in the 0.85+ structural-edge band — never the
+        # ~0.50 coinflips. See crypto_explore_stake() for the rationale.
+        if not use_kelly:
+            dollars = crypto_explore_stake(hcfg, category, m.get("question", ""),
+                                           price, max_dollars, bankroll)
         adj = 1.0
         if use_kelly:
             adj = brain_adjust(strategy, price,
