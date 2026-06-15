@@ -297,9 +297,9 @@ def test_crypto_explore_stake():
                                 1.0, BANK) == 1.0)
 
 
-def test_protected_category():
-    # Owner-protected categories are exempt from the n>=6 & pnl<0 auto-block;
-    # unprotected categories with the same negative cohort still block.
+def test_adaptive_category_sizing():
+    # Categories are NEVER hard-blocked. A losing category is downsized (never
+    # zero) so it keeps learning; protected/healthy categories trade full.
     import datetime
     recent = (bot.now_utc() - datetime.timedelta(days=1)).isoformat(
         timespec="seconds")
@@ -309,22 +309,30 @@ def test_protected_category():
                 "category": cat, "closed": recent, "context": {}}
 
     settled = []
-    for cat in ("Crypto", "Politics"):          # both net -0.50 over n=8 material
+    for cat in ("Crypto", "Politics", "Tech", "Science"):
         settled += [mk(cat, +0.20)] * 5
-        settled += [mk(cat, -0.50)] * 3
+    settled += [mk("Crypto", -0.50)] * 3      # protected: stays full despite loss
+    settled += [mk("Politics", -0.50)] * 3    # mild loss -> half
+    settled += [mk("Tech", -3.0)] * 3         # deep loss -> info size
+    # Science: 5 wins, net +1.00 -> healthy, full size
     exp = bot.compute_learning(
         {"settled": settled, "cash": 9000.0, "positions": []})["explore"]
-    ok("protected/crypto exempt despite negative cohort",
-       "Crypto" not in exp["blocked_categories"])
-    ok("protected/unprotected category still auto-blocks",
-       "Politics" in exp["blocked_categories"])
+    cm = exp["category_mult"]
+    ok("adaptive/no category is ever hard-blocked",
+       exp["blocked_categories"] == [])
+    ok("adaptive/protected category full size despite loss",
+       cm.get("Crypto") == 1.0)
+    ok("adaptive/mild loser downsized to half", cm.get("Politics") == 0.5)
+    ok("adaptive/deep loser to info size, never zero",
+       cm.get("Tech") == 0.25 and cm.get("Tech") > 0)
+    ok("adaptive/healthy category full size", cm.get("Science") == 1.0)
 
 
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
-       test_protected_category)
+       test_adaptive_category_sizing)
 
 if __name__ == "__main__":
     t0 = time.time()

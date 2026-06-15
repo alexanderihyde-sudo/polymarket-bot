@@ -748,7 +748,7 @@ def compute_learning(account):
                           else "buying data — information budget intact")
 
         bands, blocked = {}, []
-        cats, blocked_cats = {}, []
+        cats, blocked_cats, cat_mult = {}, [], {}
         if strat in ("high_prob", "news", "explore", "daytrade"):
             # 14-day window, same precedent as the pattern miner: markets
             # adapt, and a block earned by a failure mode that no longer
@@ -770,24 +770,35 @@ def compute_learning(account):
                 c["pnl"] = round(c["pnl"] + s["pnl"], 2)
             blocked = sorted(b for b, v in bands.items()
                              if v["n"] >= 6 and v["pnl"] < 0)
-            # Owner-protected categories never auto-pause on the cat block:
-            # the n>=6 & pnl<0 rule is a hair-trigger that benches a category
-            # over a single cent of noise (Crypto tripped it at -$0.16 despite
-            # 81% win / +$18.77 lifetime). Protected cats are exempted by
-            # explicit config choice; the bankroll-level breaker + auto-rollback
-            # remain the real backstop. Reversible: empty the config list.
+            # ADAPTIVE PER-CATEGORY SIZING (replaces the old category block).
+            # Owner policy: NEVER hard-block a category — that throws away a
+            # whole market instead of learning to trade it better. Instead set
+            # a size dial per category from its recent 14-day material P&L: a
+            # loser trades SMALLER (keeps learning, limits the bleed, scales
+            # back up as it recovers), a healthy category trades full. The
+            # per-category brain specialists keep refining HOW each one trades;
+            # this only sizes WHAT we stake. Protected cats always trade full.
+            # Hard backstops (bankroll daily-loss breaker, auto-rollback) are
+            # untouched and remain the real safety net. blocked_categories is
+            # retained (always empty) only so legacy consumers no-op cleanly.
             protected = set(load_config().get("learning", {})
                             .get("protected_categories", []))
-            blocked_cats = sorted(c for c, v in cats.items()
-                                  if v["n"] >= 6 and v["pnl"] < 0
-                                  and c not in protected)
+            for c, v in cats.items():
+                if c in protected or v["n"] < 6 or v["pnl"] >= 0:
+                    cat_mult[c] = 1.0          # protected / healthy: full size
+                elif v["pnl"] >= -2:
+                    cat_mult[c] = 0.5          # mild recent loss: half size
+                else:
+                    cat_mult[c] = 0.25         # deep recent loss: info-only size
+            blocked_cats = []                  # categories are NEVER hard-blocked
 
         out[strat] = {"settled": n, "wins": wins,
                       "total_pnl": round(total_pnl, 2),
                       "recent_pnl": round(last8, 2),
                       "multiplier": mult, "status": status,
                       "bands": bands, "blocked_bands": blocked,
-                      "categories": cats, "blocked_categories": blocked_cats}
+                      "categories": cats, "blocked_categories": blocked_cats,
+                      "category_mult": cat_mult}
     out["news"]["tuning"] = news_tuning(account)
     return out
 
@@ -806,10 +817,14 @@ def save_learning(learning):
         newly_blocked = set(info["blocked_bands"]) - set(old.get(strat, {}).get("blocked_bands", []))
         for band in sorted(newly_blocked):
             note(f"LEARNING: stopped buying {band}c favorites — that price range keeps losing")
-        newly_blocked_cats = (set(info["blocked_categories"])
-                              - set(old.get(strat, {}).get("blocked_categories", [])))
-        for cat in sorted(newly_blocked_cats):
-            note(f"LEARNING: stopped trading {cat} markets — that market type keeps losing")
+        old_mult = old.get(strat, {}).get("category_mult", {})
+        for cat, m in sorted((info.get("category_mult") or {}).items()):
+            om = old_mult.get(cat, 1.0)
+            if m < 1.0 and m != om:
+                note(f"LEARNING: {cat} {strat} sized to {int(m * 100)}% — "
+                     f"recent losses (downsized, not blocked)")
+            elif m >= 1.0 and om < 1.0:
+                note(f"LEARNING: {cat} {strat} back to full size — recovered")
     atomic_write(LEARNING_FILE, json.dumps(learning, indent=2))
 
 
@@ -4986,7 +5001,7 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                    blocked_bands=(), blocked_categories=(), category_counts=None,
                    bankroll=0.0, band_stats=None, section="high_probability",
                    strategy="high_prob", use_kelly=True, held_names=(),
-                   sports_exposure=0.0, held_event_ids=()):
+                   sports_exposure=0.0, held_event_ids=(), category_mult=None):
     """Find heavy favorites (e.g. 96-99 cents) resolving within a few days.
     Also drives the explorer book (section="explore"): same machinery, wider
     price band, flat $1 stakes, no Kelly gate — it buys learning data."""
@@ -5160,6 +5175,11 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         if not use_kelly:
             dollars = crypto_explore_stake(hcfg, category, m.get("question", ""),
                                            price, max_dollars, bankroll)
+        # Adaptive per-category sizing (replaces the old category block): a
+        # recently losing category trades smaller, never zero; healthy and
+        # owner-protected categories trade full. Lets every market keep
+        # learning instead of being benched.
+        dollars *= (category_mult or {}).get(category, 1.0)
         adj = 1.0
         if use_kelly:
             adj = brain_adjust(strategy, price,
@@ -5875,7 +5895,7 @@ def news_confirmed(question, ch, min_sent=0.3):
 
 
 def scan_news(cfg, skip_ids, room, bankroll, blocked_categories=(), multiplier=1.0, tuning=None,
-              section="news", strategy="news"):
+              section="news", strategy="news", category_mult=None):
     """News-reaction strategy: when major news hits, the first place it shows
     is a sharp price move on a high-volume market. Polymarket reports each
     market's one-hour price change; a big jump = news event. Research shows
@@ -5969,9 +5989,10 @@ def scan_news(cfg, skip_ids, room, bankroll, blocked_categories=(), multiplier=1
         # sees it (point-in-time, threaded — not recomputed at decision time).
         category = market_category(m)
         time.sleep(0.1)
-        if category in blocked_categories:
-            continue  # learning says news trades in this category lose
         dollars = min(ncfg.get("max_dollars_per_trade", 5.0) * multiplier, bankroll)
+        # Adaptive per-category sizing (replaces the category block): recent
+        # losers trade smaller, never zero; healthy/protected categories full.
+        dollars *= (category_mult or {}).get(category, 1.0)
         adj = brain_adjust("news", price,
                            {"spread": stats["spread"],
                             "imbalance": stats["imbalance"], "move_1h": ch},
@@ -6307,7 +6328,8 @@ def run_pass(cfg, account, trade=True):
                                         held_event_ids=[
                                             p.get("event_id")
                                             for p in account["positions"]
-                                            if p.get("event_id")])
+                                            if p.get("event_id")],
+                                        category_mult=hp.get("category_mult"))
 
     ex = learning["explore"]
     if (cfg.get("explore", {}).get("enabled") and ex["multiplier"] > 0
@@ -6326,7 +6348,8 @@ def run_pass(cfg, account, trade=True):
             cfg, skip, len(open_ex), 1.0,
             ex["blocked_bands"], ex["blocked_categories"], ex_cats,
             bankroll=account["cash"], band_stats={},
-            section="explore", strategy="explore", use_kelly=False))
+            section="explore", strategy="explore", use_kelly=False,
+            category_mult=ex.get("category_mult")))
         for o in ranked:   # diversity of contexts is the data; volume in one
             c = (o.get("category") or "Other",  # context is just noise
                  int(round((o.get("entry_price") or 0) * 20)) * 5)
@@ -6351,7 +6374,8 @@ def run_pass(cfg, account, trade=True):
                                        dt["multiplier"]
                                        * model_multiplier(models, "daytrade"),
                                        None, section="daytrade",
-                                       strategy="daytrade")
+                                       strategy="daytrade",
+                                       category_mult=dt.get("category_mult"))
 
     if (cfg.get("news", {}).get("enabled")
             and not tod_block["news"]):
@@ -6364,7 +6388,9 @@ def run_pass(cfg, account, trade=True):
                                            learning["news"]["blocked_categories"],
                                            learning["news"]["multiplier"]
                                            * model_multiplier(models, "news"),
-                                           learning["news"]["tuning"])
+                                           learning["news"]["tuning"],
+                                           category_mult=learning["news"].get(
+                                               "category_mult"))
 
     if not opportunities:
         print("  no opportunities this pass (normal — good ones are rare)")
