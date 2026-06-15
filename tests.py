@@ -173,17 +173,20 @@ def test_learning_rules():
     L = bot.compute_learning(mk("high_prob", -0.05, 30))["high_prob"]
     ok("learn/insurance churn never halves", L["multiplier"] == 1.0)
     L = bot.compute_learning(mk("high_prob", -1.0, 20))["high_prob"]
-    ok("learn/material losses pause", L["multiplier"] == 0.0)
+    ok("learn/material losses downsize, never pause to 0",
+       0 < L["multiplier"] <= 0.25)
     L = bot.compute_learning(mk("explore", -0.30, 30))["explore"]
     ok("learn/explore: budget rule not streaks", L["multiplier"] == 1.0)
     L = bot.compute_learning(mk("explore", -1.0, 60))["explore"]
-    ok("learn/explore: spent budget pauses", L["multiplier"] == 0.0)
-    # band blocks need material evidence
+    ok("learn/explore: spent budget downsizes, never 0",
+       0 < L["multiplier"] <= 0.25)
+    # bands are never blocked — losing bands downsize via band_mult
     out = bot.compute_learning(mk("high_prob", -0.05, 30))["high_prob"]
-    ok("learn/churn can't block bands", out["blocked_bands"] == [])
+    ok("learn/churn can't downsize bands",
+       out["blocked_bands"] == [] and out["band_mult"].get("95", 1.0) == 1.0)
     out = bot.compute_learning(mk("high_prob", -1.0, 10))["high_prob"]
-    ok("learn/material losses block the band",
-       "95" in out["blocked_bands"])
+    ok("learn/material losses downsize the band, never block",
+       out["blocked_bands"] == [] and 0 < out["band_mult"].get("95", 1) < 1)
 
 
 # ----------------------------------------------------------- risk & money
@@ -328,11 +331,48 @@ def test_adaptive_category_sizing():
     ok("adaptive/healthy category full size", cm.get("Science") == 1.0)
 
 
+def test_never_zero_bets():
+    # Owner policy: no strategy/band/time-bucket is ever dropped to 0 — losers
+    # downsize to a floor and keep trading. (Hard 0s remain only for the
+    # in-game ban and daily-loss breaker, which are not exercised here.)
+    import datetime
+    recent = (bot.now_utc() - datetime.timedelta(days=1)).isoformat(
+        timespec="seconds")
+
+    def mk(pnl, strat="high_prob", price=0.90):
+        return {"strategy": strat, "pnl": pnl, "entry_price": price,
+                "category": "Tech", "closed": recent, "context": {}}
+
+    # 1) strategy with net loss over 16 material settles -> floor, not paused
+    hp = bot.compute_learning(
+        {"settled": [mk(-0.50)] * 18, "cash": 9000.0, "positions": []})[
+        "high_prob"]
+    ok("never-zero/losing strategy downsized not paused",
+       0 < hp["multiplier"] <= 0.25)
+    # 2) explore $50 info budget spent -> floor, not 0
+    ex = bot.compute_learning(
+        {"settled": [mk(-1.0, "explore", 0.80)] * 60, "cash": 9000.0,
+         "positions": []})["explore"]
+    ok("never-zero/explore budget spent downsized not paused",
+       ex["multiplier"] > 0)
+    # 3) losing price band downsized, never blocked
+    eb = bot.compute_learning(
+        {"settled": [mk(-0.50, "explore", 0.82)] * 8, "cash": 9000.0,
+         "positions": []})["explore"]
+    ok("never-zero/losing band downsized not blocked",
+       eb["blocked_bands"] == [] and 0 < eb["band_mult"].get("82", 1) < 1)
+    # 4) time-of-day never hard-blocks
+    tod = bot.time_of_day_model({"settled": [mk(-0.50, "news") for _ in range(10)]})
+    ok("never-zero/time-of-day downsizes not blocks",
+       all(v is False for v in tod["now_blocked"].values())
+       and "now_mult" in tod)
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
-       test_adaptive_category_sizing)
+       test_adaptive_category_sizing, test_never_zero_bets)
 
 if __name__ == "__main__":
     t0 = time.time()

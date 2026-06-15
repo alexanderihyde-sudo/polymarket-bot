@@ -700,6 +700,12 @@ def dead_cohort(s):
 def compute_learning(account):
     out = {}
     news_mode = load_config().get("news", {}).get("mode", "follow")
+    # Owner policy: NEVER drop a strategy/band to 0 — a loser downsizes to this
+    # floor (keeps trading + learning, can scale back up), it never goes dark.
+    # The only true 0s are the hard circuit breakers: in-game ban + daily-loss
+    # breaker. Tunable/reversible via config; 0.25 = quarter size.
+    floor = max(0.05, float(load_config().get("learning", {})
+                            .get("loss_floor", 0.25)))
     for strat in STRATEGIES:
         settled = [s for s in account.get("settled", []) if s["strategy"] == strat]
         if strat == "news":  # judge the current mode on its own record only
@@ -725,8 +731,9 @@ def compute_learning(account):
             status = (f"gathering data — adapts after 8 material settles "
                       f"(has {n_mat} of {n} total)")
         elif n_mat >= 16 and last16 < 0:
-            mult = 0.0
-            status = "paused — net loss over the last 16 settled trades"
+            mult = floor
+            status = (f"downsized to {int(floor * 100)}% — net loss over the "
+                      f"last 16 settled trades (never paused)")
         elif last8 < 0:
             mult = 0.5
             status = "recent losses — trade size cut in half"
@@ -740,14 +747,16 @@ def compute_learning(account):
             # It pauses only when its loss budget ($50) is truly spent; bad
             # cells are still pruned by the band/category blocks below.
             if total_pnl <= -50:
-                mult, status = 0.0, "paused — $50 information budget spent"
+                mult = floor
+                status = (f"downsized to {int(floor * 100)}% — $50 info budget "
+                          f"spent (still buying, smaller)")
             else:
                 mult = 1.0
                 status = (f"buying data — ${-total_pnl:.2f} of $50 "
                           f"information budget used" if total_pnl < 0
                           else "buying data — information budget intact")
 
-        bands, blocked = {}, []
+        bands, blocked, band_mult = {}, [], {}
         cats, blocked_cats, cat_mult = {}, [], {}
         if strat in ("high_prob", "news", "explore", "daytrade"):
             # 14-day window, same precedent as the pattern miner: markets
@@ -768,8 +777,14 @@ def compute_learning(account):
                 c["n"] += 1
                 c["wins"] += 1 if s["pnl"] >= 0 else 0
                 c["pnl"] = round(c["pnl"] + s["pnl"], 2)
-            blocked = sorted(b for b, v in bands.items()
-                             if v["n"] >= 6 and v["pnl"] < 0)
+            # Adaptive band sizing (replaces band blocking): a losing price
+            # band trades smaller, never zero — no dead price zones.
+            for b, v in bands.items():
+                if v["n"] >= 6 and v["pnl"] < 0:
+                    band_mult[b] = floor if v["pnl"] < -2 else 0.5
+                else:
+                    band_mult[b] = 1.0
+            blocked = []   # price bands are NEVER hard-blocked
             # ADAPTIVE PER-CATEGORY SIZING (replaces the old category block).
             # Owner policy: NEVER hard-block a category — that throws away a
             # whole market instead of learning to trade it better. Instead set
@@ -798,7 +813,7 @@ def compute_learning(account):
                       "multiplier": mult, "status": status,
                       "bands": bands, "blocked_bands": blocked,
                       "categories": cats, "blocked_categories": blocked_cats,
-                      "category_mult": cat_mult}
+                      "category_mult": cat_mult, "band_mult": band_mult}
     out["news"]["tuning"] = news_tuning(account)
     return out
 
@@ -1777,8 +1792,16 @@ def time_of_day_model(account):
                           and per[s]["pnl"] < -1))  # models (see model 11 rule)
                for s in STRATEGIES}
     now_b = f"{now_utc().hour // 6 * 6:02d}-{now_utc().hour // 6 * 6 + 6:02d}h"
+    flr = max(0.05, float(load_config().get("learning", {})
+                          .get("loss_floor", 0.25)))
+    losing_now = {s: now_b in blocked[s] for s in STRATEGIES}
+    # Owner policy: a losing time-of-day DOWNSIZES the strategy, never blocks
+    # it. now_blocked stays all-False (no hard time gate); now_mult carries the
+    # downsize into each strategy's scan multiplier.
     return {"buckets": buckets, "blocked": blocked, "now": now_b,
-            "now_blocked": {s: now_b in blocked[s] for s in STRATEGIES}}
+            "now_blocked": {s: False for s in STRATEGIES},
+            "now_mult": {s: (flr if losing_now[s] else 1.0)
+                         for s in STRATEGIES}}
 
 
 CLUSTERS = [("weather", ("temperature", "°c", "°f", " rain", " snow")),
@@ -5001,7 +5024,8 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                    blocked_bands=(), blocked_categories=(), category_counts=None,
                    bankroll=0.0, band_stats=None, section="high_probability",
                    strategy="high_prob", use_kelly=True, held_names=(),
-                   sports_exposure=0.0, held_event_ids=(), category_mult=None):
+                   sports_exposure=0.0, held_event_ids=(), category_mult=None,
+                   band_mult=None):
     """Find heavy favorites (e.g. 96-99 cents) resolving within a few days.
     Also drives the explorer book (section="explore"): same machinery, wider
     price band, flat $1 stakes, no Kelly gate — it buys learning data."""
@@ -5180,6 +5204,9 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
         # owner-protected categories trade full. Lets every market keep
         # learning instead of being benched.
         dollars *= (category_mult or {}).get(category, 1.0)
+        # Adaptive per-band sizing (replaces band blocking): a losing price
+        # band trades smaller, never zero — no dead price zones.
+        dollars *= (band_mult or {}).get(str(band), 1.0)
         adj = 1.0
         if use_kelly:
             adj = brain_adjust(strategy, price,
@@ -6273,6 +6300,7 @@ def run_pass(cfg, account, trade=True):
     elif not problems:
         AUDIT_LAST["problems"] = None
     tod_block = models["m4_time_of_day"]["now_blocked"]
+    tod_mult = models["m4_time_of_day"].get("now_mult", {})
     hit = [s for s, b in tod_block.items() if b]
     if hit:
         print(f"  model 4: {models['m4_time_of_day']['now']} UTC has a proven "
@@ -6314,7 +6342,8 @@ def run_pass(cfg, account, trade=True):
         bm = bankroll_manager(cfg, account)
         opportunities += scan_high_prob(cfg, skip, len(open_hp),
                                         hp["multiplier"] * bm["dd_factor"]
-                                        * model_multiplier(models, "high_prob"),
+                                        * model_multiplier(models, "high_prob")
+                                        * tod_mult.get("high_prob", 1.0),
                                         hp["blocked_bands"],
                                         hp["blocked_categories"], cat_counts,
                                         bankroll=account["cash"],
@@ -6329,7 +6358,8 @@ def run_pass(cfg, account, trade=True):
                                             p.get("event_id")
                                             for p in account["positions"]
                                             if p.get("event_id")],
-                                        category_mult=hp.get("category_mult"))
+                                        category_mult=hp.get("category_mult"),
+                                        band_mult=hp.get("band_mult"))
 
     ex = learning["explore"]
     if (cfg.get("explore", {}).get("enabled") and ex["multiplier"] > 0
@@ -6349,7 +6379,8 @@ def run_pass(cfg, account, trade=True):
             ex["blocked_bands"], ex["blocked_categories"], ex_cats,
             bankroll=account["cash"], band_stats={},
             section="explore", strategy="explore", use_kelly=False,
-            category_mult=ex.get("category_mult")))
+            category_mult=ex.get("category_mult"),
+            band_mult=ex.get("band_mult")))
         for o in ranked:   # diversity of contexts is the data; volume in one
             c = (o.get("category") or "Other",  # context is just noise
                  int(round((o.get("entry_price") or 0) * 20)) * 5)
@@ -6372,7 +6403,8 @@ def run_pass(cfg, account, trade=True):
                                        strategy_budget(cfg, account, "daytrade"),
                                        dt["blocked_categories"],
                                        dt["multiplier"]
-                                       * model_multiplier(models, "daytrade"),
+                                       * model_multiplier(models, "daytrade")
+                                       * tod_mult.get("daytrade", 1.0),
                                        None, section="daytrade",
                                        strategy="daytrade",
                                        category_mult=dt.get("category_mult"))
@@ -6387,7 +6419,8 @@ def run_pass(cfg, account, trade=True):
                                            strategy_budget(cfg, account, "news"),
                                            learning["news"]["blocked_categories"],
                                            learning["news"]["multiplier"]
-                                           * model_multiplier(models, "news"),
+                                           * model_multiplier(models, "news")
+                                           * tod_mult.get("news", 1.0),
                                            learning["news"]["tuning"],
                                            category_mult=learning["news"].get(
                                                "category_mult"))
@@ -7010,8 +7043,8 @@ def self_test():
                           "positions": []}
     ok("explorer: cheap data never pauses",
        compute_learning(exb(-0.04, 20))["explore"]["multiplier"] == 1.0)
-    ok("explorer: spent budget pauses",
-       compute_learning(exb(-1.0, 60))["explore"]["multiplier"] == 0.0)
+    ok("explorer: spent budget downsizes, never pauses to 0",
+       0 < compute_learning(exb(-1.0, 60))["explore"]["multiplier"] <= 0.25)
     churny = {"settled": [{"strategy": "high_prob", "pnl": -0.05,
                            "entry_price": 0.97,
                            "closed": "2026-06-11T10:00:00+00:00"}] * 12,
@@ -8084,8 +8117,8 @@ def self_test():
     _alive = [dict(s, context={}, category="Weather",
                    name="Will it rain in Paris?") for s in _dead]
     _lrn2 = compute_learning({"settled": _alive + _live})
-    ok("learning: identical losses in the living era DO pause",
-       _lrn2["high_prob"]["multiplier"] == 0.0)
+    ok("learning: identical losses in the living era DO downsize (never 0)",
+       0 < _lrn2["high_prob"]["multiplier"] < 1.0)
 
     # era hygiene must reach EVERY learner, not just compute_learning:
     # the same dead cohort, stamped into one 6h bucket, must not block the
