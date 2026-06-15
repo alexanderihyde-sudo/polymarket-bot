@@ -777,6 +777,19 @@ def compute_learning(account):
     # breaker. Tunable/reversible via config; 0.25 = quarter size.
     floor = max(0.05, float(load_config().get("learning", {})
                             .get("loss_floor", 0.25)))
+    # Early-demotion guard (small-n, statistically strong negative evidence).
+    # Below the 8-settle threshold a strategy normally trades full while it
+    # gathers data — but a run that is genuinely SURPRISING under "this
+    # strategy's true win-rate is >= 50%" (e.g. 0/6 material, ~1.6% likely by
+    # chance) shouldn't keep betting full size for two more settles. We demote
+    # to HALF (never the floor, never 0, fully reversible) only when the
+    # one-sided binomial tail is below early_demote_p AND we have at least
+    # early_demote_min_n material settles — so 1-2 losses never trip it and the
+    # deliberate evidence threshold is preserved. A high_prob-style 1/6 (~11%
+    # by chance) is NOT surprising and stays full. Tunable/reversible via config.
+    _lcfg = load_config().get("learning", {})
+    early_p = float(_lcfg.get("early_demote_p", 0.05))
+    early_min_n = int(_lcfg.get("early_demote_min_n", 5))
     for strat in STRATEGIES:
         settled = [s for s in account.get("settled", []) if s["strategy"] == strat]
         if strat == "news":  # judge the current mode on its own record only
@@ -794,13 +807,26 @@ def compute_learning(account):
         material = [s for s in settled
                     if abs(s["pnl"]) >= 0.15 and not dead_cohort(s)]
         n_mat = len(material)
+        mat_wins = sum(1 for s in material if s["pnl"] >= 0)
         last8 = sum(s["pnl"] for s in material[-8:])
         last16 = sum(s["pnl"] for s in material[-16:])
 
         if n_mat < 8:
-            mult = 1.0
-            status = (f"gathering data — adapts after 8 material settles "
-                      f"(has {n_mat} of {n} total)")
+            # Surprise of this record under "true win-rate >= 50%": the exact
+            # one-sided binomial tail P(<= mat_wins | n_mat, 0.5). Only computed
+            # once we clear the min-n floor, so a 1-2 settle blip stays at 1.0.
+            edge_p = (chartml.binom_p(mat_wins, n_mat, 0.5)
+                      if n_mat >= early_min_n else 1.0)
+            if strat not in ("arbitrage", "explore") and edge_p < early_p:
+                mult = 0.5
+                status = (f"downsized to 50% — {mat_wins}/{n_mat} material "
+                          f"settles, only ~{edge_p:.1%} likely by chance if the "
+                          f"true win-rate were >=50% (strong early evidence, "
+                          f"never paused)")
+            else:
+                mult = 1.0
+                status = (f"gathering data — adapts after 8 material settles "
+                          f"(has {n_mat} of {n} total)")
         elif n_mat >= 16 and last16 < 0:
             mult = floor
             status = (f"downsized to {int(floor * 100)}% — net loss over the "
@@ -7369,6 +7395,35 @@ def self_test():
               "positions": []}
     ok("insurance costs can't halve a strategy",
        compute_learning(churny)["high_prob"]["multiplier"] == 1.0)
+
+    # ---- GATED EARLY DEMOTION ON STRONG SMALL-n EVIDENCE -------------------
+    # Below 8 material settles a strategy trades full while it gathers data,
+    # EXCEPT when the losing run is statistically surprising under "the true
+    # win-rate is >= 50%" (one-sided binomial tail < 5%) AND there are >= 5
+    # material settles. So daytrade's live 0/6 (~1.6% by chance) downsizes to
+    # half, but a high_prob-style 1/6 (~11% by chance) does NOT, and 1-2
+    # settles can never trip it. Arbitrage (our only earner) and the
+    # info-buying explorer are never demoted by this gate. Material settles =
+    # |pnl| >= 0.15 and not dead-cohort; pnl >= 0 counts as a win.
+    es = lambda strat, w, l: {"settled":
+        [{"strategy": strat, "pnl": 0.5, "entry_price": 0.5,
+          "closed": "2026-06-11T10:00:00+00:00"} for _ in range(w)]
+        + [{"strategy": strat, "pnl": -0.5, "entry_price": 0.5,
+            "closed": "2026-06-11T10:00:00+00:00"} for _ in range(l)],
+        "positions": []}
+    ok("early-demote: 0/6 material is strong evidence — half size",
+       compute_learning(es("daytrade", 0, 6))["daytrade"]["multiplier"] == 0.5)
+    ok("early-demote: 1/6 (~11% by chance) is NOT enough — full size",
+       compute_learning(es("high_prob", 1, 5))["high_prob"]["multiplier"] == 1.0)
+    ok("early-demote: 0/5 clears the bar — half size",
+       compute_learning(es("daytrade", 0, 5))["daytrade"]["multiplier"] == 0.5)
+    ok("early-demote: 1-2 settles never demote (no hair-trigger)",
+       compute_learning(es("daytrade", 0, 1))["daytrade"]["multiplier"] == 1.0
+       and compute_learning(es("daytrade", 0, 2))["daytrade"]["multiplier"] == 1.0)
+    ok("early-demote: arbitrage is never demoted (our only earner)",
+       compute_learning(es("arbitrage", 0, 6))["arbitrage"]["multiplier"] == 1.0)
+    ok("early-demote: explorer untouched — info budget governs it, not streaks",
+       compute_learning(es("explore", 0, 6))["explore"]["multiplier"] == 1.0)
 
     mk = lambda imb, pnl: {"strategy": "news", "pnl": pnl, "entry_price": 0.5,
                            "closed": "2026-06-11T12:00:00+00:00", "side": "Yes",
