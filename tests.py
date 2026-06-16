@@ -311,11 +311,14 @@ def test_adaptive_category_sizing():
         return {"strategy": "explore", "pnl": pnl, "entry_price": 0.90,
                 "category": cat, "closed": recent, "context": {}}
 
+    # Economy is the downsizable test category here: it must NOT be in
+    # config learning.protected_categories (owner has protected Crypto,
+    # Politics, Weather, Recurring, Sports — those always trade full size).
     settled = []
-    for cat in ("Crypto", "Politics", "Tech", "Science"):
+    for cat in ("Crypto", "Economy", "Tech", "Science"):
         settled += [mk(cat, +0.20)] * 5
     settled += [mk("Crypto", -0.50)] * 3      # protected: stays full despite loss
-    settled += [mk("Politics", -0.50)] * 3    # mild loss -> half
+    settled += [mk("Economy", -0.50)] * 3     # mild loss -> half
     settled += [mk("Tech", -3.0)] * 3         # deep loss -> info size
     # Science: 5 wins, net +1.00 -> healthy, full size
     exp = bot.compute_learning(
@@ -325,7 +328,7 @@ def test_adaptive_category_sizing():
        exp["blocked_categories"] == [])
     ok("adaptive/protected category full size despite loss",
        cm.get("Crypto") == 1.0)
-    ok("adaptive/mild loser downsized to half", cm.get("Politics") == 0.5)
+    ok("adaptive/mild loser downsized to half", cm.get("Economy") == 0.5)
     ok("adaptive/deep loser to info size, never zero",
        cm.get("Tech") == 0.25 and cm.get("Tech") > 0)
     ok("adaptive/healthy category full size", cm.get("Science") == 1.0)
@@ -433,12 +436,55 @@ def test_category_never_blocked():
        0 < cm.get("Tech", 0) and cm.get("Tech") == max(0.05, flr))
 
 
+def test_augmented_arb_guard():
+    # negRisk-AUGMENTED arbitrage baskets carry a tail a COMPLETE basket does
+    # not: the event can ACTIVATE a new outcome after entry that the basket
+    # never bought, and if it wins the whole basket loses. The monitor must FIRE
+    # when the event has grown beyond the held legs, stay SILENT on a complete
+    # (non-augmented) basket and on an un-grown one, and dedupe per event.
+    # (Detection only — position_risk still reports $0 for arb; the accounting
+    # fix is the adversarially-gated next step.)
+    saved_get, saved_note = bot.get_json, bot.note
+    notes = []
+    bot.note = lambda m: notes.append(m)
+    try:
+        # event reports 3 active outcomes; held basket has only 2 legs -> grown
+        bot.get_json = lambda url, params=None, **k: [
+            {"markets": [{"active": True, "closed": False}] * 3}]
+        aug = {"strategy": "arbitrage", "event_id": "EVAUG",
+               "neg_risk_augmented": True, "name": "Augmented basket",
+               "cost": 499.0, "legs": [{"market_id": "a"}, {"market_id": "b"}]}
+        bot.AUGMENTED_NOTED.discard("EVAUG")
+        bot.augmented_arb_alert({"positions": [aug]})
+        ok("aug-arb/grown augmented basket fires a tail-risk alert",
+           any("AUGMENTED-ARB" in m for m in notes))
+        # dedupe: a second pass over the same event does not re-warn
+        n_before = len(notes)
+        bot.augmented_arb_alert({"positions": [aug]})
+        ok("aug-arb/alert deduped per event", len(notes) == n_before)
+        # a COMPLETE (non-augmented) basket is never flagged
+        notes.clear()
+        bot.augmented_arb_alert({"positions": [
+            dict(aug, neg_risk_augmented=False, event_id="EVOK")]})
+        ok("aug-arb/complete basket never flagged", not notes)
+        # an augmented basket that has NOT grown (active == held) stays silent
+        notes.clear()
+        bot.get_json = lambda url, params=None, **k: [
+            {"markets": [{"active": True, "closed": False}] * 2}]
+        bot.AUGMENTED_NOTED.discard("EVSAME")
+        bot.augmented_arb_alert({"positions": [dict(aug, event_id="EVSAME")]})
+        ok("aug-arb/un-grown augmented basket stays silent", not notes)
+    finally:
+        bot.get_json, bot.note = saved_get, saved_note
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
        test_adaptive_category_sizing, test_never_zero_bets,
-       test_category_never_blocked, test_scan_pairs_dup_threshold)
+       test_category_never_blocked, test_augmented_arb_guard,
+       test_scan_pairs_dup_threshold)
 
 if __name__ == "__main__":
     t0 = time.time()

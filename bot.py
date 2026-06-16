@@ -1645,6 +1645,7 @@ def scan_arbitrage(cfg, skip_ids, multiplier=1.0):
             "strategy": "arbitrage",
             "event_id": str(event["id"]),
             "name": event.get("title", "?"),
+            "neg_risk_augmented": bool(event.get("negRiskAugmented")),
             "legs": legs, "shares": shares,
             "cost": round(shares * total, 2),
             "entry_price": round(total, 3),
@@ -5924,6 +5925,7 @@ def open_position(account, opp, cfg=None):
         "context": opp.get("context"),
         "stop": opp.get("stop"), "target": opp.get("target"),
         "name": opp["name"],
+        "neg_risk_augmented": opp.get("neg_risk_augmented", False),
         "shares": opp["shares"],
         "cost": opp["cost"],
         "entry_price": opp["entry_price"],
@@ -5990,6 +5992,41 @@ def settle_positions(account):
         else:
             still_open.append(pos)
     account["positions"] = still_open
+    augmented_arb_alert(account)
+
+
+AUGMENTED_NOTED = set()
+
+
+def augmented_arb_alert(account):
+    """Detection-only guard for negRisk-AUGMENTED arbitrage baskets. A COMPLETE
+    negRisk basket is fully hedged — buying every outcome locks $1/share, so
+    position_risk()==0 is correct. But an AUGMENTED event can ACTIVATE A NEW
+    outcome after entry; if that new outcome wins, the basket (which bought only
+    the original outcomes) pays nothing and loses the full stake. This surfaces
+    any open augmented basket whose event has grown beyond the legs we hold, so
+    the tail risk is VISIBLE before the arb scanner is widened. Detection/logging
+    only — it does NOT change sizing, accounting, or exits (the position_risk
+    accounting fix is the adversarially-gated next step). Deduped per event."""
+    for pos in account.get("positions", []):
+        if pos.get("strategy") != "arbitrage" or not pos.get("neg_risk_augmented"):
+            continue
+        eid = str(pos.get("event_id") or "")
+        if not eid or eid in AUGMENTED_NOTED:
+            continue   # already raised, or no id — don't re-fetch every cycle
+        ev = get_json(f"{GAMMA}/events", params={"id": eid})
+        if not ev:
+            continue
+        active = [m for m in (ev[0].get("markets") or [])
+                  if m.get("active") and not m.get("closed")]
+        n_now, n_held = len(active), len(pos.get("legs") or [])
+        if n_now > n_held:
+            AUGMENTED_NOTED.add(eid)
+            note(f"AUGMENTED-ARB TAIL RISK: '{pos.get('name', '?')[:50]}' event "
+                 f"now has {n_now} active outcomes but the basket holds only "
+                 f"{n_held} legs — a newly-activated outcome can win and zero "
+                 f"this ${pos.get('cost', 0):.2f} basket (position_risk still "
+                 f"reports $0; accounting fix pending adversarial review)")
 
 
 BROAD_CATEGORIES = ["Sports", "Esports", "Crypto", "Politics", "Economy",
