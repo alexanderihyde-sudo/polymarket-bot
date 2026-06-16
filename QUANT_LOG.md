@@ -2332,3 +2332,17 @@ age_seconds=0.4, exactly 2 procs (python+caffeinate). Pre-ship equity ~$8696.05
 
 **Rollback**: revert with `git reset --hard HEAD~1` (back to 23f95fd).
 Ship commit: 4227b6a.
+
+## 2026-06-16 — AUTOPILOT: shipped nothing
+
+AUTOPILOT: shipped nothing — judge chose nothing: Ship nothing. I verified every proposal against bot.py and paper_account.json; none pairs correctly-attributed evidence with a PnL/risk gain proportionate to its blast radius.
+
+#5 (p0 dead-cohort filter) correctly diagnoses a real inconsistency: mine_patterns already filters dead_cohort + a 14d window (bot.py:5448-5451), but the veto baseline p0 (bot.py:5472) does not, so the contaminated p0 collapses from 0.8367 (live) to 0.3034 (all-time), hiding real loser patterns. CONFIRMED in data. BUT its headline impact is false: of the 8 vetoes a clean p0 would add, the 5 high-significance ones (binom_p 0.0000-0.0001, e.g. cat=Other&strat=explore n=62 -$32.09 -51.8%) are all strat=explore, and explore is EXEMPT from pattern_veto by design (bot.py:6254-6258, live since 06-12: 'the explorer is EXEMPT from pattern vetoes... its $1 bets are how a stale veto earns retirement'). So the claimed '+$29.88 from 188 blocked explore trades' cannot occur. The only vetoes that would actually fire are 3 borderline high_prob patterns (binom_p 0.094-0.114, all the same -$2.66 over n=20 viewed three ways) — near-noise, and a hard per-market skip that sits uneasily with the owner's floored-downsizing-not-blocking policy. Correct diagnosis, illusory payoff.
+
+#3 (explore info-budget uses living, not total, pnl) is also a correct diagnosis — verified: explore total_pnl=-$1363.74 (1792 dead floor_fill trades, -$1341.74) currently floors the explorer to 0.25x, while living_pnl=-$22.00 would restore 1.0x. But acting on it now 4x's capital into a living book that is net-negative AND deteriorating: living material -$47.83 over 424 settles, last 50 material -$25.05 (26% WR), last 8 -$3.39; the book is propped up only by Crypto (+$20.67) while Other (-51.8%) and Sports (-52.4%) bleed. Un-flooring a worsening loser inverts 'sizing follows proven edge'; the 0.25x floor is doing the right thing now even if partly for the wrong reason.
+
+#1 (high_prob $150->$50) rests on n=1: high_prob is -$2.39 over 21 settles, median stake $4.90; a single $118.90 trade is the entire 'overbetting' thesis. Tuning a cap on one outlier.
+#2 (isotonic calibration on ALL settled) is a real but higher-blast model change whose evidence base is the contaminated full 2636-trade set (1792 dead floor_fills mixed in) with vague $10-25/mo impact.
+#4 (news_backed for explore) is additive plumbing with zero measured PnL — activity for its own sake.
+
+Honest default: ship nothing this cycle.
