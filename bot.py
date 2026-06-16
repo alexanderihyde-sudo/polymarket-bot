@@ -885,15 +885,35 @@ def cat_key(category):
 
 
 def dead_cohort(s):
-    """Settles the CURRENT code is structurally unable to repeat: sports
-    entered via the kelly lane, excluded permanently on 06-12. They stay in
+    """Settles the CURRENT code is structurally unable to repeat: they stay in
     the books (cash is cash) but say nothing about the strategy as it now
     exists, so sizing judgment must skip them — wins and losses alike, or
-    the filter is cherry-picking instead of era hygiene."""
+    the filter is cherry-picking instead of era hygiene.
+
+    Two dead eras:
+    1. Sports entered via the kelly lane (lane=='r90'), excluded permanently
+       on 06-12.
+    2. Old explore floor_fill positions from the superseded 'buy-everything'
+       code: maintain_trade_floor now gates buys to the
+       [floor_edge_gate.buy_price_min, buy_price_max] (default 0.75-0.92)
+       favorite band, so any settled floor_fill whose entry sits OUTSIDE that
+       band could only have been opened by the pre-gate code and can never
+       recur. Their -$1290 of longshot/multi-day bleed must not pull the
+       living explorer's category sizing to the floor. In-band floor_fill
+       settles ARE repeatable and stay in the judge's view."""
     ctx = s.get("context") or {}
-    return (ctx.get("lane") == "r90"
+    if (ctx.get("lane") == "r90"
             and (s.get("category") == "Sports"
-                 or bool(_SPORTSY.search(s.get("name") or ""))))
+                 or bool(_SPORTSY.search(s.get("name") or "")))):
+        return True
+    if s.get("strategy") == "explore" and ctx.get("floor_fill") is True:
+        g = load_config().get("floor_edge_gate", {})
+        lo = float(g.get("buy_price_min", 0.75))
+        hi = float(g.get("buy_price_max", 0.92))
+        ep = s.get("entry_price", 0)
+        if not (lo <= ep <= hi):
+            return True
+    return False
 
 
 def compute_learning(account):
