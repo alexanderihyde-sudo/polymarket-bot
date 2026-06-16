@@ -7001,7 +7001,8 @@ def dashboard_state():
             "last_checked": p.get("last_checked"),
             "stop": p.get("stop"), "target": p.get("target"),
             "context": p.get("context"),
-            "path": p.get("path", [])[-60:],
+            "path": p.get("path", [])[-16:],   # enough for the row sparkline;
+            # full 4.6MB-at-1000-positions payloads choked the 2s dashboard poll
         })
     invested = round(sum(x["value"] for x in positions), 2)
     cost_basis = sum(p["cost"] for p in account["positions"])
@@ -7300,7 +7301,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     except (BrokenPipeError, ConnectionResetError,
                             ValueError, OSError):
                         return
-                    time.sleep(0.4)
+                    time.sleep(2)   # was 0.4s; at 1000 positions re-parsing the
+                    # ~3MB account file 2.5x/s pegged the server. 2s is plenty —
+                    # the snapshot writer refreshes on the same cadence.
             elif self.path.startswith("/api/health"):
                 age = round(time.time() - HEARTBEAT["t"], 1)
                 import resource
