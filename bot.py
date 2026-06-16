@@ -5942,6 +5942,77 @@ def open_position(account, opp, cfg=None):
          f"cost ${opp['cost']:.2f} ({opp['detail']})")
 
 
+def maintain_trade_floor(cfg, account):
+    """OWNER DIRECTIVE (2026-06-15): keep AT LEAST cfg['min_active_trades'] open
+    positions AT ALL TIMES — a hard volume floor for learning-by-doing. After
+    the normal scan, if we're below the floor, open small explore positions on
+    the most-liquid markets we don't already hold until the floor is met (or
+    cash / available markets run out). Priced off Gamma's cached bestAsk (no
+    per-market book call, so 170 fills don't hammer the API).
+
+    HARD RAILS PRESERVED — the only two checks the floor will not bypass:
+      * in-game ban: never opens a live/in-game market (jump risk), and
+      * cash balance: never overdraws the (paper) account.
+    The soft sizing gates (heat, sub-account budget, category allocation,
+    per-cell diversity, order governor) ARE bypassed on purpose — the floor is
+    a hard owner requirement that outranks them. The daily-loss circuit breaker
+    still returns from run_pass BEFORE this runs, so a breaker day pauses the
+    floor along with everything else."""
+    floor = int(cfg.get("min_active_trades", 0) or 0)
+    have = len(account["positions"])
+    if floor <= 0 or have >= floor:
+        return
+    held_mids = {str(l.get("market_id")) for p in account["positions"]
+                 for l in (p.get("legs") or [])}
+    stake = float(cfg.get("explore", {}).get("max_dollars_per_trade", 1.0)) or 1.0
+    opened = 0
+    for offset in range(0, 1600, 100):          # up to ~1,600 liquid candidates
+        if have + opened >= floor:
+            break
+        markets = get_json(f"{GAMMA}/markets", params={
+            "active": "true", "closed": "false", "order": "volume24hr",
+            "ascending": "false", "limit": 100, "offset": offset}) or []
+        if not markets:
+            break
+        for m in markets:
+            if have + opened >= floor:
+                break
+            mid = str(m.get("id") or "")
+            tokens = jlist(m.get("clobTokenIds"))
+            if not mid or mid in held_mids or not tokens:
+                continue
+            if is_in_game(m):
+                continue                        # HARD RAIL: never a live game
+            price = fnum(m.get("bestAsk"), 0.0)
+            if not (0.02 <= price <= 0.99):
+                continue                        # need a sane, fillable ask
+            shares = max(1, int(stake / price))
+            cost = round(shares * price, 2)
+            if cost <= 0 or cost > account["cash"]:
+                continue                        # HARD RAIL: never overdraw cash
+            account["cash"] -= cost
+            account["positions"].append({
+                "strategy": "explore",
+                "event_id": str((m.get("events") or [{}])[0].get("id") or mid),
+                "category": m.get("category") or "Other",
+                "context": {"floor_fill": True},
+                "stop": 0.02, "target": 0.995,
+                "name": m.get("question", "?"),
+                "neg_risk_augmented": False,
+                "shares": shares, "cost": cost, "entry_price": round(price, 4),
+                "legs": [{"market_id": mid, "question": m.get("question", "?"),
+                          "token_index": 0, "token_id": tokens[0],
+                          "price": round(price, 4), "outcome": "Yes",
+                          "settled": False, "proceeds": 0.0}],
+                "opened": now_utc().isoformat(timespec="seconds"),
+            })
+            held_mids.add(mid)
+            opened += 1
+    if opened:
+        note(f"TRADE FLOOR: +{opened} fill positions -> {have + opened} active "
+             f"(owner floor {floor})")
+
+
 def settle_positions(account):
     """Check held markets; when one resolves, collect the (paper) payout."""
     still_open = []
@@ -6810,6 +6881,7 @@ def run_pass(cfg, account, trade=True):
             print(f"  * FOUND [{opp['strategy']}] {opp['name'][:60]} — "
                   f"cost ${opp['cost']:.2f} — {opp['detail']}")
     if trade:
+        maintain_trade_floor(cfg, account)   # owner hard floor: >= N active
         save_account(account)
         record_history(account, force=True)
 

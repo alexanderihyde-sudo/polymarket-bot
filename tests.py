@@ -478,13 +478,50 @@ def test_augmented_arb_guard():
         bot.get_json, bot.note = saved_get, saved_note
 
 
+def test_trade_floor():
+    # OWNER DIRECTIVE (2026-06-15): keep >= min_active_trades open AT ALL TIMES.
+    # The floor tops up with small explore buys on liquid markets we don't hold,
+    # SKIPS in-game/live markets, never overdraws cash, and is a no-op once the
+    # count is at/above the floor.
+    saved_get, saved_ig = bot.get_json, bot.is_in_game
+
+    def fake_markets(url, params=None, **k):
+        if (params or {}).get("offset", 0) > 0:
+            return []                       # single page of 60 candidates
+        return [{"id": str(1000 + i), "question": f"Q{i}?",
+                 "clobTokenIds": json.dumps([f"t{i}", f"u{i}"]),
+                 "bestAsk": "0.50", "events": [{"id": f"e{i}"}],
+                 "category": "Crypto"} for i in range(60)]
+    bot.get_json = fake_markets
+    bot.is_in_game = lambda m: m.get("id") == "1003"   # one live market
+    try:
+        acct = {"positions": [], "cash": 1000.0}
+        bot.maintain_trade_floor(
+            {"min_active_trades": 25, "explore": {"max_dollars_per_trade": 1.0}},
+            acct)
+        ok("floor/reaches the configured minimum", len(acct["positions"]) >= 25)
+        ok("floor/skips the in-game market", all(
+            l["market_id"] != "1003"
+            for p in acct["positions"] for l in p["legs"]))
+        ok("floor/cash never goes negative", acct["cash"] >= 0)
+        ok("floor/fills are explore + flagged", all(
+            p["strategy"] == "explore" and p["context"].get("floor_fill")
+            for p in acct["positions"]))
+        n = len(acct["positions"])
+        bot.maintain_trade_floor({"min_active_trades": 5}, acct)
+        ok("floor/no-op when already at/above floor",
+           len(acct["positions"]) == n)
+    finally:
+        bot.get_json, bot.is_in_game = saved_get, saved_ig
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
        test_adaptive_category_sizing, test_never_zero_bets,
        test_category_never_blocked, test_augmented_arb_guard,
-       test_scan_pairs_dup_threshold)
+       test_trade_floor, test_scan_pairs_dup_threshold)
 
 if __name__ == "__main__":
     t0 = time.time()
