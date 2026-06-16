@@ -2347,3 +2347,37 @@ AUTOPILOT: shipped nothing — judge chose nothing: Ship nothing. I verified eve
 
 Honest default: ship nothing this cycle.
 2026-06-16 AUTOPILOT: shipped nothing — adversarial review killed it: safety-rail violation flagged. commit 1cdc209
+
+## 2026-06-16 — AUTOPILOT cycle 9: filter dead-cohort from Thompson sampler ranking
+
+**Shipped** (commit cdbd623): one-line change to `thompson_rank()` (bot.py:3145).
+Cell-building loop guard changed from
+`if t["strategy"] != "explore":` to
+`if t["strategy"] != "explore" or dead_cohort(t):`
+so dead-cohort settles no longer pollute the Beta(w,l) cells that rank explorer
+candidates.
+
+**Evidence**: paper_account.json has 2,718 explore settles; ~1,911 are dead
+`floor_fill` longshots (entry_price <0.75 or >0.92, structurally unrepeatable
+under the current 0.75-0.92 band gate), ~99.5% losers. These inflated loss
+counts in 18 price bands of the 'Other' category by 70-700x, e.g. band 0-5c
+Beta(2, 373 dead losers) and band 1-10c Beta(0, 700 dead losers). Net effect:
+Thompson draws for low-price bands collapsed to near-zero utility, suppressing
+all <0.30 exploration based on dead-era data. `dead_cohort` (bot.py:887) is the
+same read-only predicate already applied in compute_learning and
+brain_online_learn (cycle 8); thompson_rank was the asymmetric gap.
+
+**Expected impact**: honest Beta priors for longshot bands (measurement, not a
+profit claim). Removing 1,911 contaminated losses lets low-price markets draw
+Beta(~1, ~1) neutral instead of Beta(1, ~1700); previously-invisible bands
+re-enter exploration ranking. Low-price longshots may still lose on living data,
+but suppression will now be earned by living settles, not dead ones. Blast radius
+LOW: thompson_rank only orders explorer candidates (callers bot.py:7222, 8779,
+8790) — no entry gate, exit, sizing, or safety rail touched. Reversible.
+
+**Test tally**: live health post-restart — ok:true, audit=="balanced",
+age_seconds=0.1, exactly 2 procs (python+caffeinate). Pre-ship cash $1551.40
+(2787 settles); post-ship cash $1552.01 (2789 settles).
+
+**Rollback**: `git reset --hard HEAD~1` (back to 4227b6a).
+Ship commit: cdbd623.
