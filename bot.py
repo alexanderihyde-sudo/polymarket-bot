@@ -206,6 +206,9 @@ def fetch_books_bulk(token_ids):
     for i in range(0, len(token_ids), 100):
         chunk = token_ids[i:i + 100]
         _governor()
+        HEARTBEAT["t"] = time.time()   # pricing thousands of tokens is many
+        # chunked POSTs — keep the heartbeat alive so a slow sweep isn't
+        # mistaken for a hang (check_exits(full) over the whole book)
         try:
             r = session.post(f"{CLOB}/books",
                              json=[{"token_id": t} for t in chunk], timeout=10)
