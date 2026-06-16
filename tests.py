@@ -500,8 +500,10 @@ def test_trade_floor():
             {"min_active_trades": 25, "explore": {"max_dollars_per_trade": 1.0}},
             acct)
         ok("floor/reaches the configured minimum", len(acct["positions"]) >= 25)
-        ok("floor/skips the in-game market", all(
-            l["market_id"] != "1003"
+        # owner lifted the in-game ban for the floor (2026-06-15): live markets
+        # are now eligible, so the would-be in-game market IS opened, not skipped.
+        ok("floor/in-game markets eligible (owner lifted ban)", any(
+            l["market_id"] == "1003"
             for p in acct["positions"] for l in p["legs"]))
         ok("floor/cash never goes negative", acct["cash"] >= 0)
         ok("floor/fills are explore + flagged", all(

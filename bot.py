@@ -613,6 +613,24 @@ def save_account(account):
     atomic_write(ACCOUNT_FILE, json.dumps(account, indent=2))
 
 
+def snapshot_loop(account):
+    """Keep the dashboard's account file fresh ~every 2s, INDEPENDENT of the
+    scan loop. dashboard_state() and the 400ms SSE tick both read ACCOUNT_FILE
+    from disk, so when a heavy run_pass (the 200-position floor settle, the
+    ~2min memory warm-start, brain_train) blocks the single-threaded main loop,
+    the file — and the whole dashboard — used to freeze for minutes. This daemon
+    only WRITES the live snapshot (atomic, last-writer-wins with the main loop;
+    a rare mid-mutation serialize just raises and is retried), so equity +
+    positions keep streaming to the browser even mid-scan. It deliberately does
+    NOT touch HEARTBEAT — a genuinely hung loop must still trip the watchdog."""
+    while True:
+        try:
+            save_account(account)
+        except Exception:
+            pass
+        time.sleep(2)
+
+
 def record_history(account, force=False):
     """Snapshot account value for the dashboard chart. Quiet minutes where
     nothing changed are skipped so the file doesn't fill up with flat points."""
@@ -5950,14 +5968,14 @@ def maintain_trade_floor(cfg, account):
     cash / available markets run out). Priced off Gamma's cached bestAsk (no
     per-market book call, so 170 fills don't hammer the API).
 
-    HARD RAILS PRESERVED — the only two checks the floor will not bypass:
-      * in-game ban: never opens a live/in-game market (jump risk), and
+    HARD RAIL PRESERVED — the only check the floor will not bypass:
       * cash balance: never overdraws the (paper) account.
     The soft sizing gates (heat, sub-account budget, category allocation,
-    per-cell diversity, order governor) ARE bypassed on purpose — the floor is
-    a hard owner requirement that outranks them. The daily-loss circuit breaker
-    still returns from run_pass BEFORE this runs, so a breaker day pauses the
-    floor along with everything else."""
+    per-cell diversity, order governor) AND the in-game ban are bypassed on
+    purpose — the floor is a hard owner requirement that outranks them (owner
+    explicitly lifted the in-game ban here on 2026-06-15). The daily-loss
+    circuit breaker still returns from run_pass BEFORE this runs, so a breaker
+    day pauses the floor along with everything else."""
     floor = int(cfg.get("min_active_trades", 0) or 0)
     have = len(account["positions"])
     if floor <= 0 or have >= floor:
@@ -5981,8 +5999,8 @@ def maintain_trade_floor(cfg, account):
             tokens = jlist(m.get("clobTokenIds"))
             if not mid or mid in held_mids or not tokens:
                 continue
-            if is_in_game(m):
-                continue                        # HARD RAIL: never a live game
+            # Owner lifted the in-game ban for the floor (2026-06-15, "you can
+            # buy in a live game") — live/in-game markets are eligible here.
             price = fnum(m.get("bestAsk"), 0.0)
             if not (0.02 <= price <= 0.99):
                 continue                        # need a sane, fillable ask
@@ -6014,23 +6032,35 @@ def maintain_trade_floor(cfg, account):
 
 
 def settle_positions(account):
-    """Check held markets; when one resolves, collect the (paper) payout."""
+    """Check held markets; when one resolves, collect the (paper) payout.
+
+    BATCHED: every unsettled leg's market id is fetched ~20 at a time with
+    closed=true (Gamma omits closed markets from plain id queries, so this
+    directly returns the resolved ones). Settling hundreds of open positions —
+    e.g. the owner trade floor — now costs a handful of calls instead of one
+    get_json + 0.1s sleep PER LEG, which had blocked the live loop for minutes
+    and froze the dashboard. Unresolved ids simply don't come back and stay
+    open. Same payout/learning logic as before, just a bulk prefetch."""
+    need = sorted({str(l["market_id"]) for p in account["positions"]
+                   for l in p["legs"]
+                   if not l["settled"] and l.get("market_id")})
+    resolved = {}
+    for i in range(0, len(need), 20):
+        batch = get_json(f"{GAMMA}/markets",
+                         params=[("id", x) for x in need[i:i + 20]]
+                         + [("closed", "true")]) or []
+        for m in batch:
+            if m.get("closed"):
+                resolved[str(m.get("id"))] = m
+        time.sleep(0.05)
     still_open = []
     for pos in account["positions"]:
         for leg in pos["legs"]:
             if leg["settled"]:
                 continue
-            data = get_json(f"{GAMMA}/markets", params={"id": leg["market_id"]})
-            time.sleep(0.1)
-            market = data[0] if data else None
+            market = resolved.get(str(leg["market_id"]))
             if not market:
-                # Gamma drops closed markets from plain id queries — this
-                # market may have RESOLVED. Re-probe the closed set.
-                data = get_json(f"{GAMMA}/markets",
-                                params={"id": leg["market_id"], "closed": "true"})
-                market = data[0] if data else None
-            if not market or not market.get("closed"):
-                continue
+                continue                     # not resolved yet — keep holding
             prices = [fnum(p) for p in jlist(market.get("outcomePrices"))]
             final = prices[leg["token_index"]] if len(prices) > leg["token_index"] else 0.0
             leg["settled"] = True
@@ -6132,17 +6162,26 @@ def leg_token_id(leg):
     return None
 
 
-def check_exits(cfg, account):
+def check_exits(cfg, account, full=False):
     """Watch live prices on open favorite trades and sell when the price says
     to: cut losses early instead of riding a collapsing favorite to zero, or
     lock a win once the market is all but decided. Arbitrage positions are
-    never sold early — their payout is only guaranteed if held to the end."""
+    never sold early — their payout is only guaranteed if held to the end.
+
+    `full=False` (the 1-second fast loop) watches only the bracketed books
+    (high_prob/news/daytrade). The info book — explore + the owner trade-floor
+    fills — holds to resolution (stop 0.02, "hold for the label"), so it does
+    NOT need per-second checks; fetching books for hundreds of them every fast
+    cycle is what stalled the live dashboard. `full=True` (the per-scan pass,
+    every ~60s) also sweeps explore to catch its rare 0.995 target locks."""
     ecfg = cfg.get("exit", {})
     stop = ecfg.get("stop_loss_price", 0)
     target = ecfg.get("take_profit_price", 2)
+    watch_strats = (("high_prob", "news", "daytrade", "explore") if full
+                    else ("high_prob", "news", "daytrade"))
     watch = [(pos, leg_token_id(pos["legs"][0]))
              for pos in list(account["positions"])
-             if pos["strategy"] in ("high_prob", "news", "explore", "daytrade")
+             if pos["strategy"] in watch_strats
              and not pos["legs"][0]["settled"]]
     books = fetch_books_bulk([t for _, t in watch if t])
     for pos, token in watch:
@@ -6692,7 +6731,7 @@ def run_pass(cfg, account, trade=True):
     """One full cycle: settle finished markets, learn, look for new trades."""
     print(f"\n=== scan at {now_utc():%Y-%m-%d %H:%M} UTC ===")
     if trade:
-        check_exits(cfg, account)
+        check_exits(cfg, account, full=True)
         settle_positions(account)
 
     learning = compute_learning(account)
@@ -9020,6 +9059,9 @@ def main():
         print("Live-scores watcher on: ESPN feed racing the market (shadow).")
         threading.Thread(target=evolver_loop, daemon=True).start()
         print("Evolver on: strategies re-derived from fresh evidence every 6h.")
+        threading.Thread(target=snapshot_loop, args=(account,), daemon=True).start()
+        print("Live snapshot writer on: dashboard refreshes every ~2s even while "
+              "a heavy scan/settle/warm-start runs.")
         if cfg.get("research_recorder", {}).get("enabled"):
             threading.Thread(target=recorder_loop, args=(cfg,), daemon=True).start()
             threading.Thread(target=mem_warmstart, daemon=True).start()
