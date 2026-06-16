@@ -236,6 +236,12 @@ def fetch_books_bulk(token_ids):
 # position polling — so every open position marks to market in ~real time.
 PRICE_WS = {}
 WS_STATS = {"connected": False, "assets": 0, "updates": 0, "last": 0.0}
+# DASH_CACHE holds the dashboard payload pre-built once per snapshot tick from
+# the IN-MEMORY account, so the SSE stream and /api/state serve bytes straight
+# from RAM instead of re-reading + reparsing the 47 MB account file on every
+# push. "state" = full /api/state body; "tick" = the lightweight SSE header
+# (t/total/cash/inv/open). Written by snapshot_loop; read by the do_GET handlers.
+DASH_CACHE = {"state": b"", "tick": b"", "t": 0.0}
 
 
 def _ws_apply(d):
@@ -281,38 +287,65 @@ def websocket_loop(account):
     re-subscribe with the latest token set (the trade floor churns constantly)
     and reconnects on any drop. Subscriptions are chunked so a huge book never
     overflows one message; certifi supplies the CA bundle (the bare client has
-    no trust store, like requests would)."""
+    no trust store, like requests would). New positions are picked up within
+    ~3s by an incremental subscriber on the LIVE socket (no reconnect gap); a
+    ~40s recycle reconnects to prune closed-position subscriptions (fallback)."""
     while True:
         try:
-            toks = list({(p.get("legs") or [{}])[0].get("token_id")
-                         for p in list(account["positions"]) if p.get("legs")})
-            toks = [t for t in toks if t]
-            if not toks:
-                time.sleep(3)
+            cur = [t for t in {(p.get("legs") or [{}])[0].get("token_id")
+                               for p in list(account["positions"])
+                               if p.get("legs")} if t]
+            if not cur:
+                time.sleep(1)
                 continue
+            subbed = set()
 
-            def _open(w, _t=toks):
+            def _subs(w, ids):
                 # subscribe in chunks so even thousands of tokens (the no-cap
                 # floor) ALL get a live feed without one oversized frame
-                for i in range(0, len(_t), 500):
+                ids = list(ids)
+                for i in range(0, len(ids), 500):
                     try:
-                        w.send(json.dumps({"assets_ids": _t[i:i + 500],
+                        w.send(json.dumps({"assets_ids": ids[i:i + 500],
                                            "type": "market"}))
                     except Exception:
-                        break
-                WS_STATS.update(connected=True, assets=len(_t))
+                        return False
+                return True
+
+            def _open(w):
+                subbed.clear()
+                now_toks = [t for t in {(p.get("legs") or [{}])[0].get("token_id")
+                                        for p in list(account["positions"])
+                                        if p.get("legs")} if t]
+                if _subs(w, now_toks):
+                    subbed.update(now_toks)
+                WS_STATS.update(connected=True, assets=len(subbed))
             ws = websocket.WebSocketApp(
                 CLOB_WS, on_message=_ws_on_message, on_open=_open,
                 on_error=lambda w, e: None,
                 on_close=lambda w, *a: WS_STATS.update(connected=False))
 
-            def _recycle(w):
-                time.sleep(40)
+            def _maintain(w):
+                # FAST path: subscribe newly-opened tokens on the live socket
+                # every ~3s (no gap). After ~40s, close to force a reconnect
+                # that prunes closed-position subs (the proven fallback).
+                for _ in range(13):
+                    time.sleep(3)
+                    try:
+                        live = {(p.get("legs") or [{}])[0].get("token_id")
+                                for p in list(account["positions"])
+                                if p.get("legs")}
+                        new = {t for t in live if t} - subbed
+                        if new and _subs(w, new):
+                            subbed.update(new)
+                            WS_STATS.update(assets=len(subbed))
+                    except Exception:
+                        pass
                 try:
                     w.close()
                 except Exception:
                     pass
-            threading.Thread(target=_recycle, args=(ws,), daemon=True).start()
+            threading.Thread(target=_maintain, args=(ws,), daemon=True).start()
             ws.run_forever(sslopt={"ca_certs": certifi.where()},
                            ping_interval=20, ping_timeout=10)
         except Exception:
@@ -727,16 +760,19 @@ def save_account(account):
 
 
 def snapshot_loop(account):
-    """Keep the dashboard LIVE in ~real time, INDEPENDENT of the scan loop:
-    every ~2s, mark every open position to market from bulk book fetches and
-    rewrite ACCOUNT_FILE (atomic). dashboard_state() and the 400ms SSE tick both
-    read ACCOUNT_FILE from disk, so this makes ALL open positions (hundreds — or
-    the owner's 1,000-position floor) tick in the browser like Polymarket, even
-    while a heavy run_pass / the ~2min memory warm-start blocks the single-
-    threaded main loop. DISPLAY-ONLY: it refreshes last_price/last_mid for
-    mark-to-market; the main loop still OWNS exits, settles and opens. Iterates a
-    COPY and swallows errors so it never fights the main loop's mutations. Does
-    NOT touch HEARTBEAT — a genuinely hung loop must still trip the watchdog."""
+    """Keep the dashboard LIVE in ~real time, INDEPENDENT of the scan loop.
+    Each fast tick (~0.3s): mark every open position to its live websocket price
+    IN MEMORY, then rebuild the dashboard payload (full /api/state body + the
+    lightweight SSE header tick) into DASH_CACHE as pre-serialized bytes, so the
+    dashboard serves straight from RAM with NO 47 MB file round-trip per push —
+    ALL positions (the owner's 1,000+ floor) tick in the browser like Polymarket
+    even while a heavy run_pass / the ~2min warm-start blocks the main loop. The
+    full table is rebuilt every ~1s and the heavy account file is persisted only
+    every ~10s (durability only; the main loop owns real persistence and these
+    marks are display-only, re-derived on restart). Iterates COPIES and swallows
+    errors so it never fights the main loop. Does NOT touch HEARTBEAT — a hung
+    loop must still trip the watchdog."""
+    tick = 0
     while True:
         try:
             stamp = now_utc().isoformat(timespec="seconds")
@@ -748,10 +784,26 @@ def snapshot_loop(account):
                     p["last_price"] = q["bid"]
                     p["last_mid"] = q["mid"]
                     p["last_checked"] = stamp
-            save_account(account)
+            # lightweight header tick — built from RAM every fast tick (~0.3s)
+            inv = sum(position_value(p) for p in list(account["positions"]))
+            DASH_CACHE["tick"] = json.dumps(
+                {"t": stamp, "total": round(account["cash"] + inv, 2),
+                 "cash": round(account["cash"], 2), "inv": round(inv, 2),
+                 "open": len(account["positions"])}).encode()
+            # full table — rebuilt from RAM ~1s; persist the 47 MB file ~10s
+            tick += 1
+            if tick % 3 == 0:
+                try:
+                    DASH_CACHE["state"] = json.dumps(
+                        dashboard_state(account)).encode()
+                except Exception:
+                    pass
+            if tick % 33 == 0:
+                save_account(account)
+            DASH_CACHE["t"] = time.time()
         except Exception:
             pass
-        time.sleep(1)
+        time.sleep(0.3)
 
 
 def record_history(account, force=False):
@@ -7346,16 +7398,19 @@ def _roi_table(settled, key):
     return sorted(rows, key=lambda r: -r["roi"])
 
 
-def dashboard_state():
-    """Everything the web page needs, read fresh from disk each time."""
+def dashboard_state(account=None):
+    """Everything the web page needs. When `account` is passed (snapshot_loop),
+    build from that live IN-MEMORY snapshot — NO 47 MB disk reload; when None
+    (cold /api/state fallback), load fresh from disk as before."""
     cfg = load_config()
-    account = load_account(cfg)
+    if account is None:
+        account = load_account(cfg)
     positions = []
     # at thousands of positions (the no-cap floor) the heavy per-row sparkline
     # path + entry context would balloon the payload (6MB+ every 2s) — drop them
     # past a threshold so the table stays light; the core columns stay live.
     lite = len(account["positions"]) > 800
-    for p in account["positions"]:
+    for p in list(account["positions"]):
         value = position_value(p)
         leg0 = p["legs"][0]
         row = {
@@ -7657,23 +7712,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 while True:
                     try:
-                        acct = json.loads(ACCOUNT_FILE.read_text())
-                        inv = sum(position_value(p)
-                                  for p in acct["positions"])
-                        tick = {"t": now_utc().isoformat(timespec="seconds"),
-                                "total": round(acct["cash"] + inv, 2),
-                                "cash": round(acct["cash"], 2),
-                                "inv": round(inv, 2),
-                                "open": len(acct["positions"])}
-                        self.wfile.write(
-                            f"data: {json.dumps(tick)}\n\n".encode())
+                        body = DASH_CACHE["tick"]
+                        if not body:        # cold start: snapshot not built yet
+                            acct = json.loads(ACCOUNT_FILE.read_text())
+                            inv = sum(position_value(p)
+                                      for p in acct["positions"])
+                            body = json.dumps(
+                                {"t": now_utc().isoformat(timespec="seconds"),
+                                 "total": round(acct["cash"] + inv, 2),
+                                 "cash": round(acct["cash"], 2),
+                                 "inv": round(inv, 2),
+                                 "open": len(acct["positions"])}).encode()
+                        self.wfile.write(b"data: " + body + b"\n\n")
                         self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError,
                             ValueError, OSError):
                         return
-                    time.sleep(2)   # was 0.4s; at 1000 positions re-parsing the
-                    # ~3MB account file 2.5x/s pegged the server. 2s is plenty —
-                    # the snapshot writer refreshes on the same cadence.
+                    time.sleep(0.3)   # serves DASH_CACHE bytes from RAM (no file
+                    # read) — snapshot_loop rebuilds the tick every ~0.3s.
             elif self.path.startswith("/api/health"):
                 age = round(time.time() - HEARTBEAT["t"], 1)
                 import resource
@@ -7699,7 +7755,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send((HERE / "lightweight-charts.js").read_bytes(),
                            "application/javascript")
             elif self.path.startswith("/api/state"):
-                body = json.dumps(dashboard_state()).encode()
+                body = DASH_CACHE["state"] or json.dumps(
+                    dashboard_state()).encode()   # RAM cache; disk fallback
                 self._send(body, "application/json")
             else:
                 self._send(DASHBOARD_HTML.read_bytes(), "text/html; charset=utf-8")
