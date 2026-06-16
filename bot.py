@@ -3143,7 +3143,7 @@ def thompson_rank(account, opps):
     Exploration stops being uniform and starts being intelligent."""
     cells = {}
     for t in account["settled"]:
-        if t["strategy"] != "explore":
+        if t["strategy"] != "explore" or dead_cohort(t):
             continue
         c = (int(round((t.get("entry_price") or 0) * 20)), t.get("category") or "Other")
         w, l = cells.get(c, (0, 0))
