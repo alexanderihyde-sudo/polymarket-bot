@@ -479,15 +479,15 @@ def test_augmented_arb_guard():
 
 
 def test_trade_floor():
-    # OWNER DIRECTIVE (2026-06-15): keep >= min_active_trades open AT ALL TIMES.
-    # The floor tops up with small explore buys on liquid markets we don't hold,
-    # SKIPS in-game/live markets, never overdraws cash, and is a no-op once the
-    # count is at/above the floor.
+    # OWNER DIRECTIVE (2026-06-15): hold a position on EVERY buyable market — NO
+    # CAP. Buys every market it pages that we don't hold + has a sane ask, until
+    # cash runs out. In-game markets eligible (owner lifted the ban). Re-running
+    # is a no-op once every market is held. Cash is the ONLY hard rail.
     saved_get, saved_ig = bot.get_json, bot.is_in_game
 
     def fake_markets(url, params=None, **k):
         if (params or {}).get("offset", 0) > 0:
-            return []                       # single page of 60 candidates
+            return []                       # single page of 60 markets
         return [{"id": str(1000 + i), "question": f"Q{i}?",
                  "clobTokenIds": json.dumps([f"t{i}", f"u{i}"]),
                  "bestAsk": "0.50", "events": [{"id": f"e{i}"}],
@@ -496,12 +496,9 @@ def test_trade_floor():
     bot.is_in_game = lambda m: m.get("id") == "1003"   # one live market
     try:
         acct = {"positions": [], "cash": 1000.0}
-        bot.maintain_trade_floor(
-            {"min_active_trades": 25, "explore": {"max_dollars_per_trade": 1.0}},
-            acct)
-        ok("floor/reaches the configured minimum", len(acct["positions"]) >= 25)
-        # owner lifted the in-game ban for the floor (2026-06-15): live markets
-        # are now eligible, so the would-be in-game market IS opened, not skipped.
+        bot.maintain_trade_floor({"floor_stake": 1.0}, acct)
+        ok("floor/buys EVERY buyable market (no cap)",
+           len(acct["positions"]) == 60)
         ok("floor/in-game markets eligible (owner lifted ban)", any(
             l["market_id"] == "1003"
             for p in acct["positions"] for l in p["legs"]))
@@ -510,11 +507,38 @@ def test_trade_floor():
             p["strategy"] == "explore" and p["context"].get("floor_fill")
             for p in acct["positions"]))
         n = len(acct["positions"])
-        bot.maintain_trade_floor({"min_active_trades": 5}, acct)
-        ok("floor/no-op when already at/above floor",
-           len(acct["positions"]) == n)
+        bot.maintain_trade_floor({"floor_stake": 1.0}, acct)
+        ok("floor/no-op once every market is held", len(acct["positions"]) == n)
+        # cash is the only cap: tiny balance stops it early, never overdraws
+        acct2 = {"positions": [], "cash": 5.0}
+        bot.maintain_trade_floor({"floor_stake": 1.0}, acct2)
+        ok("floor/cash is the only cap", len(acct2["positions"]) <= 5
+           and acct2["cash"] >= 0)
     finally:
         bot.get_json, bot.is_in_game = saved_get, saved_ig
+
+
+def test_ws_price_feed():
+    # The live websocket feed folds CLOB market-channel events into PRICE_WS for
+    # real-time mark-to-market: price_change carries best_bid/best_ask per asset;
+    # book carries full bids/asks (best bid = max, best ask = min).
+    bot.PRICE_WS.clear()
+    bot._ws_apply({"event_type": "price_change", "price_changes": [
+        {"asset_id": "TOKA", "best_bid": "0.40", "best_ask": "0.44"}]})
+    q = bot.PRICE_WS.get("TOKA")
+    ok("ws/price_change sets bid/ask/mid",
+       bool(q) and q["bid"] == 0.40 and q["ask"] == 0.44 and q["mid"] == 0.42)
+    bot._ws_apply({"event_type": "book", "asset_id": "TOKB",
+                   "bids": [{"price": "0.30", "size": "1"},
+                            {"price": "0.31", "size": "2"}],
+                   "asks": [{"price": "0.39", "size": "1"},
+                            {"price": "0.38", "size": "2"}]})
+    q = bot.PRICE_WS.get("TOKB")
+    ok("ws/book uses best bid (max) + best ask (min)",
+       bool(q) and q["bid"] == 0.31 and q["ask"] == 0.38)
+    bot._ws_apply({"event_type": "price_change",
+                   "price_changes": [{"asset_id": "X"}]})   # missing prices
+    ok("ws/malformed message ignored safely", "X" not in bot.PRICE_WS)
 
 
 # ---------------------------------------------------------- main
@@ -523,7 +547,7 @@ ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
        test_adaptive_category_sizing, test_never_zero_bets,
        test_category_never_blocked, test_augmented_arb_guard,
-       test_trade_floor, test_scan_pairs_dup_threshold)
+       test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold)
 
 if __name__ == "__main__":
     t0 = time.time()

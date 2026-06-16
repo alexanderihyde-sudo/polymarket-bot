@@ -803,21 +803,15 @@ function render() {
   // tables
   const FILT = r => !FILTER || r.strategy === FILTER || r.category === FILTER;
   const SRCH = p => !SEARCH || (p.name || "").toLowerCase().includes(SEARCH);
-  const posRowsAll = s.positions.filter(FILT).filter(SRCH);
-  // render a live WINDOW, not 1000+ rows every 2s (that janks the browser).
-  // Sorted by value so the meaningful positions surface; the count shows the
-  // true total. Polymarket-style: a live window over a large book.
-  const POS_CAP = 300;
-  const posRows = posRowsAll.length > POS_CAP
-    ? [...posRowsAll].sort((a, b) => (b.value || 0) - (a.value || 0)).slice(0, POS_CAP)
-    : posRowsAll;
+  // owner: show EVERY trade (no cap). Sorted by value so the biggest surface
+  // first; the whole book is rendered and live-updated each refresh.
+  const posRows = [...s.positions.filter(FILT).filter(SRCH)]
+    .sort((a, b) => (b.value || 0) - (a.value || 0));
   renderTable($("positions"), POS_COLS, posRows, "pos",
     "No open positions — waiting for setups that pass every filter (normal).");
   renderTable($("settled"), SET_COLS, s.settled.filter(FILT), "set",
     "Nothing has settled yet.");
-  $("n-pos").textContent = posRowsAll.length > POS_CAP
-    ? `(showing ${POS_CAP} of ${s.positions.length})`
-    : `(${s.positions.length})`;
+  $("n-pos").textContent = `(${s.positions.length})`;
   $("n-set").textContent = `(${s.settled_total})`;
 
   // learning

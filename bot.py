@@ -47,9 +47,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests
+import certifi
+import websocket  # websocket-client: the live CLOB market-data feed
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
+CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 DASHBOARD_PORT = 8765
 
 HERE = Path(__file__).parent
@@ -217,6 +220,92 @@ def fetch_books_bulk(token_ids):
         except Exception as e:
             print(f"  ! bulk books error: {e}")
     return out
+
+
+# ----------------------------------------- live websocket price feed
+#
+# Polymarket's own UI is real-time because the CLOB pushes a websocket stream;
+# polling REST books for hundreds/thousands of positions can never match it.
+# PRICE_WS[asset_id] = {"bid","ask","mid"} is kept hot by websocket_loop from
+# the market channel's `price_change` (carries best_bid/best_ask per asset) and
+# `book` (full snapshot) events. The snapshot writer reads it — no REST, no per-
+# position polling — so every open position marks to market in ~real time.
+PRICE_WS = {}
+WS_STATS = {"connected": False, "assets": 0, "updates": 0, "last": 0.0}
+
+
+def _ws_apply(d):
+    """Fold one decoded market-channel message into PRICE_WS."""
+    try:
+        et = d.get("event_type")
+        if et == "price_change":
+            for ch in d.get("price_changes", []):
+                aid = ch.get("asset_id")
+                bb, ba = ch.get("best_bid"), ch.get("best_ask")
+                if aid and bb is not None and ba is not None:
+                    bid, ask = float(bb), float(ba)
+                    PRICE_WS[str(aid)] = {"bid": bid, "ask": ask,
+                                          "mid": round((bid + ask) / 2, 4)}
+                    WS_STATS["updates"] += 1
+        elif et == "book":
+            aid = d.get("asset_id")
+            bids, asks = d.get("bids") or [], d.get("asks") or []
+            if aid and bids and asks:
+                bid = max(float(b["price"]) for b in bids)
+                ask = min(float(a["price"]) for a in asks)
+                PRICE_WS[str(aid)] = {"bid": bid, "ask": ask,
+                                      "mid": round((bid + ask) / 2, 4)}
+                WS_STATS["updates"] += 1
+        WS_STATS["last"] = time.time()
+    except Exception:
+        pass
+
+
+def _ws_on_message(_ws, m):
+    try:
+        arr = json.loads(m)
+        for d in (arr if isinstance(arr, list) else [arr]):
+            _ws_apply(d)
+    except Exception:
+        pass
+
+
+def websocket_loop(account):
+    """The live price feed (like Polymarket's UI). Subscribes to every open
+    position's token on the CLOB market channel and keeps PRICE_WS hot from the
+    pushed price_change/book events — no REST polling. Recycles every ~40s to
+    re-subscribe with the latest token set (the trade floor churns constantly)
+    and reconnects on any drop. Subscriptions are chunked so a huge book never
+    overflows one message; certifi supplies the CA bundle (the bare client has
+    no trust store, like requests would)."""
+    while True:
+        try:
+            toks = list({(p.get("legs") or [{}])[0].get("token_id")
+                         for p in list(account["positions"]) if p.get("legs")})
+            toks = [t for t in toks if t][:4000]   # cap the subscribe payload
+            if not toks:
+                time.sleep(3)
+                continue
+            ws = websocket.WebSocketApp(
+                CLOB_WS, on_message=_ws_on_message,
+                on_open=lambda w: (w.send(json.dumps(
+                    {"assets_ids": toks, "type": "market"})),
+                    WS_STATS.update(connected=True, assets=len(toks))),
+                on_error=lambda w, e: None,
+                on_close=lambda w, *a: WS_STATS.update(connected=False))
+
+            def _recycle(w):
+                time.sleep(40)
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            threading.Thread(target=_recycle, args=(ws,), daemon=True).start()
+            ws.run_forever(sslopt={"ca_certs": certifi.where()},
+                           ping_interval=20, ping_timeout=10)
+        except Exception:
+            pass
+        time.sleep(1)
 
 
 # ------------------------------------------------- in-RAM market memory
@@ -626,21 +715,19 @@ def snapshot_loop(account):
     NOT touch HEARTBEAT — a genuinely hung loop must still trip the watchdog."""
     while True:
         try:
-            poss = list(account["positions"])
-            toks = [(p["legs"][0].get("token_id")
-                     if p.get("legs") and not p["legs"][0].get("settled")
-                     else None) for p in poss]
-            books = fetch_books_bulk([t for t in toks if t]) or {}
-            for p, t in zip(poss, toks):
-                bs = books.get(str(t)) if t else None
-                if bs and bs.get("bid") is not None and bs.get("ask") is not None:
-                    p["last_price"] = bs["bid"]
-                    p["last_mid"] = round((bs["bid"] + bs["ask"]) / 2, 4)
-                    p["last_checked"] = now_utc().isoformat(timespec="seconds")
+            stamp = now_utc().isoformat(timespec="seconds")
+            for p in list(account["positions"]):
+                leg = (p.get("legs") or [None])[0]
+                t = leg.get("token_id") if leg else None
+                q = PRICE_WS.get(str(t)) if t else None   # live websocket price
+                if q:
+                    p["last_price"] = q["bid"]
+                    p["last_mid"] = q["mid"]
+                    p["last_checked"] = stamp
             save_account(account)
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(1)
 
 
 def record_history(account, force=False):
@@ -5973,40 +6060,36 @@ def open_position(account, opp, cfg=None):
 
 
 def maintain_trade_floor(cfg, account):
-    """OWNER DIRECTIVE (2026-06-15): keep AT LEAST cfg['min_active_trades'] open
-    positions AT ALL TIMES — a hard volume floor for learning-by-doing. After
-    the normal scan, if we're below the floor, open small explore positions on
-    the most-liquid markets we don't already hold until the floor is met (or
-    cash / available markets run out). Priced off Gamma's cached bestAsk (no
-    per-market book call, so 170 fills don't hammer the API).
+    """OWNER DIRECTIVE (2026-06-15): hold a position on EVERY buyable market —
+    NO CAP. Each scan, page the ENTIRE active-market universe (by volume) and
+    open a small position on every market we don't already hold, until the
+    universe is exhausted or cash runs out. Priced off Gamma's cached bestAsk
+    (no per-market book call). Stake = cfg['floor_stake'] (kept small so the
+    cash stretches across every single market).
 
-    HARD RAIL PRESERVED — the only check the floor will not bypass:
+    HARD RAIL — the only check the floor will not bypass:
       * cash balance: never overdraws the (paper) account.
     The soft sizing gates (heat, sub-account budget, category allocation,
     per-cell diversity, order governor) AND the in-game ban are bypassed on
-    purpose — the floor is a hard owner requirement that outranks them (owner
-    explicitly lifted the in-game ban here on 2026-06-15). The daily-loss
-    circuit breaker still returns from run_pass BEFORE this runs, so a breaker
-    day pauses the floor along with everything else."""
-    floor = int(cfg.get("min_active_trades", 0) or 0)
-    have = len(account["positions"])
-    if floor <= 0 or have >= floor:
-        return
+    purpose (owner). The daily-loss circuit breaker still returns from run_pass
+    BEFORE this runs, so a breaker day pauses the floor along with everything."""
+    stake = float(cfg.get("floor_stake", 1.0)) or 1.0
     held_mids = {str(l.get("market_id")) for p in account["positions"]
                  for l in (p.get("legs") or [])}
-    stake = float(cfg.get("explore", {}).get("max_dollars_per_trade", 1.0)) or 1.0
     opened = 0
-    for offset in range(0, 8000, 100):          # page deep enough to fill a
-        # large floor (e.g. 1,000) from the active-market universe by volume
-        if have + opened >= floor:
-            break
+    offset = 0
+    while offset < 40000:                        # sanity stop, NOT a cap — Gamma
+        # returns empty once every active market has been paged
+        if account["cash"] < stake:
+            break                                # HARD RAIL: out of cash
         markets = get_json(f"{GAMMA}/markets", params={
             "active": "true", "closed": "false", "order": "volume24hr",
             "ascending": "false", "limit": 100, "offset": offset}) or []
         if not markets:
             break
+        offset += 100
         for m in markets:
-            if have + opened >= floor:
+            if account["cash"] < stake:
                 break
             mid = str(m.get("id") or "")
             tokens = jlist(m.get("clobTokenIds"))
@@ -6040,8 +6123,8 @@ def maintain_trade_floor(cfg, account):
             held_mids.add(mid)
             opened += 1
     if opened:
-        note(f"TRADE FLOOR: +{opened} fill positions -> {have + opened} active "
-             f"(owner floor {floor})")
+        note(f"TRADE FLOOR: +{opened} positions -> {len(account['positions'])} "
+             f"active (buying every buyable market; cash ${account['cash']:.2f})")
 
 
 def settle_positions(account):
@@ -9075,9 +9158,12 @@ def main():
         print("Live-scores watcher on: ESPN feed racing the market (shadow).")
         threading.Thread(target=evolver_loop, daemon=True).start()
         print("Evolver on: strategies re-derived from fresh evidence every 6h.")
+        threading.Thread(target=websocket_loop, args=(account,), daemon=True).start()
+        print("Live websocket price feed on: CLOB market channel pushes "
+              "best bid/ask per position in real time (like Polymarket).")
         threading.Thread(target=snapshot_loop, args=(account,), daemon=True).start()
-        print("Live snapshot writer on: dashboard refreshes every ~2s even while "
-              "a heavy scan/settle/warm-start runs.")
+        print("Live snapshot writer on: marks every position to the websocket "
+              "price each ~1s; dashboard stays live during heavy scans.")
         if cfg.get("research_recorder", {}).get("enabled"):
             threading.Thread(target=recorder_loop, args=(cfg,), daemon=True).start()
             threading.Thread(target=mem_warmstart, daemon=True).start()
