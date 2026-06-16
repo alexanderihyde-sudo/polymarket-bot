@@ -2303,3 +2303,32 @@ WHY IT MATTERS: these contaminated losses were dragging explore.category_mult['O
 VERIFY: bot restarted onto c06b61d under caffeinate; /api/health ok:true, audit=="balanced", age_seconds<1; exactly 2 procs (python+caffeinate). Equity before ~$7,415.89 (cash 1355.41 + open mark 6060.48), after ~$7,416.63 — unchanged as expected (no position change). Watchdog confirmed alive; .autopilot_pause fenced during restart then removed to re-arm.
 
 TEST TALLY: data-verification checks PASS (band split, winner-symmetry, entry distribution, config match, live-gate filter match, boundary/rounding analysis). Live health PASS (ok/balanced/fresh/2-procs/clean-log). No unit test suite invoked this cycle; change is a pure predicate extension validated against live settled data. ROLLBACK = git reset --hard HEAD~1.
+
+## 2026-06-16 ~11:54 UTC — AUTOPILOT cycle 8 (SHIPPED)
+
+**Change**: Fix dead-cohort contamination in `brain_online_learn` (bot.py:3087).
+Added `dead_cohort(pos)` to the early-return guard:
+`if not BRAIN.get("w") or pos["strategy"] == "arbitrage" or dead_cohort(pos): return`
+
+**Evidence**: 1,702 dead-cohort trades (67% of 2,542 non-arbitrage settles) were
+being fed into online SGD updates in `brain_online_learn` when they should be
+skipped — pre-gate `floor_fill` positions (entry_price <0.75 or >0.92,
+structurally unrepeatable under the current floor_edge_gate band). $-1,293.60 of
+unrepeatable PnL was leaking into BRAIN['w']. `brain_train` already filters
+dead_cohort (bot.py:2547), so the online path was asymmetric vs the batch path;
+the in-code comment (bot.py:8692-8698) explicitly warns against exactly this
+asymmetry. `dead_cohort` is a pure read-only predicate — no entry/exit/sizing/
+safety-rail path touched.
+
+**Expected impact**: No historical PnL change (losses already settled). Forward:
+online SGD updates BRAIN['w'] only on the 840 repeatable live trades ($-40.39
+net) instead of the contaminated 2,542; future `brain_adjust()` sizing calibrated
+on honest signal. Blast radius very low, fully reversible.
+
+**Test tally**: live health post-restart — ok:true, audit=="balanced",
+age_seconds=0.4, exactly 2 procs (python+caffeinate). Pre-ship equity ~$8696.05
+(cash $1396.18 + open mark $7299.87, 2562 settles); post-ship equity ~$8695.30
+(2563 settles).
+
+**Rollback**: revert with `git reset --hard HEAD~1` (back to 23f95fd).
+Ship commit: 4227b6a.
