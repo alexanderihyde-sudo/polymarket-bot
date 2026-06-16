@@ -6389,6 +6389,9 @@ def settle_positions(account):
         for m in batch:
             if m.get("closed"):
                 resolved[str(m.get("id"))] = m
+        HEARTBEAT["t"] = time.time()   # settling thousands of legs is many
+        # batched calls — keep the heartbeat alive so the watchdog doesn't
+        # kill a working settle mid-loop
         time.sleep(0.05)
     still_open = []
     for pos in account["positions"]:
@@ -7081,6 +7084,7 @@ def run_pass(cfg, account, trade=True):
     if trade:
         save_learning(learning)
     BRAIN.update(brain_train(account))
+    HEARTBEAT["t"] = time.time()   # model training can be slow on a big corpus
     try:
         atomic_write(BRAIN_FILE, json.dumps(BRAIN, indent=1))
     except OSError:
@@ -7647,7 +7651,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 import resource
                 rss_mb = round(resource.getrusage(
                     resource.RUSAGE_SELF).ru_maxrss / 1e6)  # macOS: bytes
-                self._send(json.dumps({"ok": age < 120, "age_seconds": age,
+                self._send(json.dumps({"ok": age < 300, "age_seconds": age,
                                        "audit": AUDIT_LAST["problems"] or "balanced",
                                        "rss_mb": rss_mb,
                                        "reentry": len(REENTRY),
