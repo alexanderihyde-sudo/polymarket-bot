@@ -7067,9 +7067,15 @@ def monitor_pass(cfg, account, do_settle=False):
 def run_pass(cfg, account, trade=True):
     """One full cycle: settle finished markets, learn, look for new trades."""
     print(f"\n=== scan at {now_utc():%Y-%m-%d %H:%M} UTC ===")
+    HEARTBEAT["t"] = time.time()   # a slow-but-PROGRESSING scan (thousands of
+    # open positions make settle/exits heavy) must not read as 'hung' to the
+    # watchdog — stamp the heartbeat at every phase boundary so only a TRUE
+    # stall (stuck inside one phase) trips it. This stops the kill/restart loop.
     if trade:
         check_exits(cfg, account, full=True)
+        HEARTBEAT["t"] = time.time()
         settle_positions(account)
+        HEARTBEAT["t"] = time.time()
 
     learning = compute_learning(account)
     if trade:
@@ -7250,6 +7256,8 @@ def run_pass(cfg, account, trade=True):
         hrs = (o.get("context") or {}).get("hours_to_end") or 48
         return (1 - (o.get("entry_price") or 0.5)) / max(hrs / 24, 0.25)
     opportunities.sort(key=_velocity, reverse=True)
+    HEARTBEAT["t"] = time.time()             # scans done — heartbeat before the
+    # open loop + floor (the last heavy phase at thousands of positions)
     for opp in opportunities:
         if trade:
             open_position(account, opp, cfg)
@@ -7258,6 +7266,7 @@ def run_pass(cfg, account, trade=True):
                   f"cost ${opp['cost']:.2f} — {opp['detail']}")
     if trade:
         maintain_trade_floor(cfg, account)   # owner hard floor: >= N active
+        HEARTBEAT["t"] = time.time()
         save_account(account)
         record_history(account, force=True)
 
