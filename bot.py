@@ -39,6 +39,7 @@ import re
 import os
 import random
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -671,10 +672,22 @@ def parse_end_date(market):
 
 def atomic_write(path, text):
     """Crash-safe write: a kill mid-save must never corrupt a state file.
-    Write to a temp file in the same directory, then atomically swap it in."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    Write to a UNIQUE temp file in the same directory, then atomically swap it
+    in. The tmp name is unique per call (mkstemp) so concurrent writers — e.g.
+    snapshot_loop and a main-loop save_account() rewriting the account at the
+    same instant — never collide on one fixed '.tmp' and rename it out from
+    under each other (the [Errno 2] ENOENT os.replace was throwing)."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent),
+                               prefix=path.name + ".", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp)
+    try:
+        os.chmod(tmp, 0o644)            # mkstemp defaults to 0600; keep prior perms
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)     # never leave an orphan tmp behind on failure
+        raise
 
 
 def note(msg):
