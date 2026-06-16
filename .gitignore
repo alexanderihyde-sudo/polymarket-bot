@@ -51,3 +51,4 @@ trainer_state.json
 watchdog.launchd.log
 snipe_shadow.json
 move_shadow.json
+crypto_shadow.json

@@ -11,6 +11,17 @@
     "max_hours_to_resolution": 24,
     "max_stake_per_position": 3.0
   },
+  "crypto_shadow": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "band_min": 0.75,
+    "band_max": 0.84,
+    "max_hours_to_resolution": 24,
+    "max_markets_scan": 600,
+    "min_n_for_test": 400,
+    "wilson_z": 1.96,
+    "_comment": "SHADOW-ONLY forward calibration of the 75-84c intraday crypto Up-or-Down favorite edge. Logs every such favorite the scanner sees into crypto_shadow.json and re-runs the Wilson 95% CI at n>=400. CONFIRM only if CI lower bound > mean entry price on FRESH data; then size via scan_high_prob _velocity with sign-off. Sits no real stakes. NEVER sizes the 90c (EV~0) or 95c (net -4% ROI) bands."
+  },
   "research_recorder": {
     "enabled": true,
     "interval_seconds": 30,

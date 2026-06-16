@@ -5086,6 +5086,217 @@ def crossmarket_loop():
         time.sleep(180)
 
 
+# ------------------------------------ intraday-crypto-favorite calibration shadow
+# Forward calibration test for the 75-84c intraday crypto "Up or Down" favorite
+# edge. The in-sample signal (n=183: realized win 84.2% vs entry 79.4%, +6.2pp
+# per trade) was NOT statistically significant — its Wilson 95% lower bound
+# (78.8%) did not clear the entry price (79.4%), so "fairly priced" could not be
+# rejected. This instrument logs EVERY such favorite the scanner sees PROSPECTIVELY
+# into crypto_shadow.json and re-runs the Wilson 95% CI on FRESH forward data once
+# n>=400. Confirmation = fresh CI lower bound EXCEEDS mean entry price; only THEN
+# is the band eligible to be sized via scan_high_prob's _velocity (EV/day) ranker,
+# with owner sign-off. Until then it is UNPROVEN and deploys nothing — measurement
+# only, sits no real stakes beyond the existing floor. Explicitly does NOT touch
+# the 90c band (calibrated to EV~0) or the 95c band (net NEGATIVE: -4% $ROI,
+# realized win 94.9% < price 97.1%, overpriced).
+CRYPTO_SHADOW_FILE = HERE / "crypto_shadow.json"
+_CRYPTO_SHADOW_DOC = (
+    "SHADOW-ONLY forward calibration of the 75-84c intraday crypto Up-or-Down "
+    "favorite edge. Prospectively logs every such favorite the scanner sees "
+    "(entry ask, token, expected resolution) and grades the realized outcome, so "
+    "win%-vs-price can be re-tested on FRESH data (not the in-sample n=183). "
+    "Re-runs the Wilson 95% CI (z=1.96) at n>=400: edge CONFIRMED only if the CI "
+    "lower bound exceeds the mean entry price; then size via scan_high_prob "
+    "_velocity (EV/day) with sign-off. Until then UNPROVEN — deploys nothing, "
+    "sits no real stakes. NEVER sizes the 90c (EV~0) or 95c (net -4% ROI) bands.")
+try:
+    CRYPTO_SHADOW = json.loads(CRYPTO_SHADOW_FILE.read_text())
+    CRYPTO_SHADOW.setdefault("pending", [])
+    CRYPTO_SHADOW.setdefault("graded", [])
+    CRYPTO_SHADOW.setdefault("scorecard", {})
+except (FileNotFoundError, ValueError):
+    CRYPTO_SHADOW = {"doc": _CRYPTO_SHADOW_DOC, "pending": [], "graded": [],
+                     "scorecard": {}}
+
+
+def _crypto_updown_favorite(m, lo, hi):
+    """(entry_ask, token, idx, end) for a crypto 'Up or Down' market whose
+    FAVORITE side has an ask in [lo, hi], else None. Numbers/strings only — no
+    book call. Gamma's bestBid/bestAsk are token-0's; token-1's ask is its binary
+    complement (1 - bestBid), so BOTH sides are considered and whichever is the
+    75-84c favorite is the one recorded. (The live floor only ever inspects
+    token 0's bestAsk, so it silently misses every Down-favored market — this
+    shadow stays unbiased across Up- and Down-favored books, which the
+    calibration needs.) idx is the favorite token index, read back at grade time
+    to score that side's final outcomePrice."""
+    q = m.get("question") or ""
+    ql = q.lower()
+    if "up or down" not in ql:
+        return None                          # the intraday up/down product only
+    is_crypto = (bool(_CT_ASSET.search(ql))
+                 or cat_key(m.get("category")) == "crypto"
+                 or cluster_of(q) == "crypto-price")
+    if not is_crypto:
+        return None
+    tokens = jlist(m.get("clobTokenIds"))
+    prices = [fnum(p) for p in jlist(m.get("outcomePrices"))]
+    if len(tokens) < 2 or len(prices) < 2:
+        return None
+    bid0, ask0 = fnum(m.get("bestBid")), fnum(m.get("bestAsk"))
+    asks = [ask0 if ask0 > 0 else prices[0],         # token-0 ask
+            (1 - bid0) if bid0 > 0 else prices[1]]    # token-1 ask = 1 - bid0
+    end = parse_end_date(m)
+    if not end:
+        return None
+    for i in (0, 1):
+        if lo <= asks[i] <= hi:              # only the favorite side can be here
+            return round(asks[i], 4), str(tokens[i]), i, end
+    return None
+
+
+def crypto_shadow_pass(cfg=None):
+    """One $0 shadow pass: scan the near-term universe, log every FRESH 75-84c
+    intraday crypto Up-or-Down favorite (deduped by market id — first in-band
+    sighting only, for independent outcomes), grade the ones that have resolved,
+    and recompute the win%-vs-price calibration with a Wilson 95% CI. Writes only
+    crypto_shadow.json; sits no stakes, deploys nothing."""
+    cfg = cfg or load_config()
+    scfg = cfg.get("crypto_shadow", {})
+    if not scfg.get("enabled", True):
+        return CRYPTO_SHADOW.get("scorecard", {})
+    lo = float(scfg.get("band_min", 0.75))
+    hi = float(scfg.get("band_max", 0.84))
+    max_hrs = float(scfg.get("max_hours_to_resolution", 24))
+    z = float(scfg.get("wilson_z", 1.96))
+    min_n = int(scfg.get("min_n_for_test", 400))
+    page_budget = max(int(scfg.get("max_markets_scan", 600)), 100)
+    now = now_utc()
+
+    # 1) OBSERVE — page near-term markets (soonest-ending first, where the short
+    # intraday crypto books cluster) and log each fresh in-band favorite once.
+    seen = {str(r["market"]) for r in CRYPTO_SHADOW["pending"]}
+    seen |= {str(r["market"]) for r in CRYPTO_SHADOW["graded"]}
+    added = 0
+    for off in range(0, page_budget, 100):
+        page = get_json(f"{GAMMA}/markets", params={
+            "active": "true", "closed": "false", "order": "endDate",
+            "ascending": "true", "limit": 100, "offset": off,
+            "end_date_min": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date_max": (now + timedelta(hours=max_hrs)
+                             ).strftime("%Y-%m-%dT%H:%M:%SZ")}) or []
+        for m in page:
+            mid = str(m.get("id") or "")
+            if not mid or mid in seen:
+                continue
+            hit = _crypto_updown_favorite(m, lo, hi)
+            if not hit:
+                continue
+            ask, tok, idx, end = hit
+            hrs = (end - now).total_seconds() / 3600.0
+            if not (0 < hrs <= max_hrs):
+                continue                     # intraday only
+            CRYPTO_SHADOW["pending"].append({
+                "market": mid, "token": tok, "token_index": idx,
+                "question": (m.get("question") or "?")[:90],
+                "entry_price": round(ask, 4),
+                "observed": now.isoformat(timespec="seconds"),
+                "observed_ts": int(now.timestamp()),
+                "end": end.isoformat(timespec="seconds"),
+                "hold_hours": round(hrs, 3),
+                "roi_per_day": round((1 - ask) / max(hrs / 24, 1 / 24), 4)})
+            seen.add(mid)
+            added += 1
+        if len(page) < 100:
+            break
+        time.sleep(0.2)
+    CRYPTO_SHADOW["pending"] = CRYPTO_SHADOW["pending"][-4000:]
+
+    # 2) GRADE — resolve pending favorites that have CLOSED (batched, like
+    # settle_positions). Token 0 wins iff its final outcomePrice >= 0.5.
+    pend = CRYPTO_SHADOW["pending"]
+    need = sorted({str(r["market"]) for r in pend})
+    resolved = {}
+    for i in range(0, len(need), 20):
+        batch = get_json(f"{GAMMA}/markets",
+                         params=[("id", x) for x in need[i:i + 20]]
+                         + [("closed", "true")]) or []
+        for m in batch:
+            if m.get("closed"):
+                resolved[str(m.get("id"))] = m
+        time.sleep(0.05)
+    still = []
+    for r in pend:
+        m = resolved.get(str(r["market"]))
+        if not m:                            # not resolved yet — keep holding,
+            age_h = (now.timestamp()         # but drop never-resolving stragglers
+                     - r.get("observed_ts", now.timestamp())) / 3600.0
+            if age_h <= 24 * 7:              # so the pending queue stays bounded
+                still.append(r)
+            continue
+        prices = [fnum(p) for p in jlist(m.get("outcomePrices"))]
+        idx = r.get("token_index", 0)
+        final = prices[idx] if len(prices) > idx else 0.0
+        r["win"] = 1 if final >= 0.5 else 0    # the favorite side resolved 1.0
+        r["final_price"] = round(final, 4)
+        r["graded"] = now.isoformat(timespec="seconds")
+        CRYPTO_SHADOW["graded"].append(r)
+    CRYPTO_SHADOW["pending"] = still
+    CRYPTO_SHADOW["graded"] = CRYPTO_SHADOW["graded"][-6000:]
+
+    # 3) CALIBRATE — Wilson 95% lower bound on FRESH graded data vs entry price.
+    g = CRYPTO_SHADOW["graded"]
+    n = len(g)
+    wins = sum(r.get("win", 0) for r in g)
+    win_rate = round(wins / n, 4) if n else None
+    mean_entry = round(sum(r["entry_price"] for r in g) / n, 4) if n else None
+    ci_lo = round(wilson_lower(wins, n, z=z), 4) if n else None
+    mean_roi_day = (round(sum(r.get("roi_per_day", 0) for r in g) / n, 4)
+                    if n else None)
+    if n < min_n:
+        verdict = (f"ACCUMULATING ({n}/{min_n} fresh graded) — UNPROVEN; hold at "
+                   "floor, do not size")
+    elif ci_lo is not None and mean_entry is not None and ci_lo > mean_entry:
+        verdict = (f"CONFIRMED on fresh data — Wilson 95% lower {ci_lo:.3f} > mean "
+                   f"entry {mean_entry:.3f}; edge real, ELIGIBLE to size via "
+                   "scan_high_prob _velocity (EV/day) with owner sign-off. Do NOT "
+                   "extend to the 90c (EV~0) or 95c (net -4% ROI) bands.")
+    else:
+        verdict = (f"NOT confirmed — Wilson 95% lower {ci_lo} <= mean entry "
+                   f"{mean_entry}; 'fairly priced' cannot be rejected. Remain "
+                   "shadow-only.")
+    CRYPTO_SHADOW["scorecard"] = {
+        "n": n, "pending": len(CRYPTO_SHADOW["pending"]),
+        "win_rate": win_rate, "mean_entry_price": mean_entry,
+        "wilson95_lower": ci_lo,
+        "edge_pp": (round((win_rate - mean_entry) * 100, 2)
+                    if win_rate is not None and mean_entry is not None else None),
+        "mean_roi_per_day": mean_roi_day, "band": [lo, hi],
+        "min_n_for_test": min_n, "z": z, "verdict": verdict,
+        "updated": now.isoformat(timespec="seconds")}
+    CRYPTO_SHADOW["doc"] = _CRYPTO_SHADOW_DOC
+    atomic_write(CRYPTO_SHADOW_FILE, json.dumps(CRYPTO_SHADOW, indent=1))
+    return CRYPTO_SHADOW["scorecard"]
+
+
+def crypto_shadow_loop():
+    """Intraday-crypto-favorite SHADOW heartbeat — each scan logs fresh 75-84c
+    crypto Up-or-Down favorites, grades resolved ones, recomputes the Wilson 95%
+    calibration. Trades $0; wrapped so it can never disturb the trading process."""
+    time.sleep(90)                           # let warmstart + first scan settle
+    while True:
+        cfg = load_config()
+        try:
+            sc = crypto_shadow_pass(cfg)
+            journal("CRYPTO_SHADOW", n=sc.get("n", 0),
+                    pending=sc.get("pending", 0), win=sc.get("win_rate"),
+                    entry=sc.get("mean_entry_price"),
+                    ci_lo=sc.get("wilson95_lower"), verdict=sc.get("verdict"))
+        except Exception as e:
+            print(f"  ! crypto shadow error: {e}")
+        time.sleep(max(15, int((cfg.get("crypto_shadow") or {}).get(
+            "interval_seconds", 60))))
+
+
 def scores_loop(account):
     """Multi-feed score watcher: ESPN + the official MLB and NHL feeds,
     racing each other AND the market. First source to report a change gets
@@ -9215,6 +9426,10 @@ def main():
         print("Cross-market instrument on: SHADOW mode — Kalshi/PredictIt/"
               "Manifold consensus, graded vs the PM price, trades $0 until the "
               "brain's OOS gate earns it weight.")
+        threading.Thread(target=crypto_shadow_loop, daemon=True).start()
+        print("Crypto-favorite calibration on: SHADOW mode — logs every 75-84c "
+              "intraday crypto Up/Down favorite, re-tests win%-vs-price with a "
+              "Wilson 95% CI on fresh data at n>=400, trades $0 until confirmed.")
         mins = cfg["scan_interval_minutes"]
         monitor_secs = max(1, int(cfg.get("monitor_interval_seconds", 10)))
         settle_secs = max(monitor_secs, int(cfg.get("settle_check_seconds", 60)))
