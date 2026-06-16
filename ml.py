@@ -505,6 +505,82 @@ def apply_cal(cal, p):
     return apply_platt(cal, p)
 
 
+def choose_calibration(preds, min_race=40, frac=0.6):
+    """Pick the calibration map for a model's held-out stack predictions, and
+    crucially allow it to ABSTAIN (return None = ship the raw stack uncalibrated).
+
+    `preds` is the chronological list of (raw_prediction, label) on the holdout.
+    Small holdouts (< min_race) keep the historical behaviour: one Platt fit on
+    everything (two parameters degrade gracefully when data is thin). Larger
+    holdouts run an HONEST, leakage-free contest — each candidate is fit on the
+    first `frac` of the holdout and scored on the untouched tail (mean logloss):
+
+        none   raw stack, no calibration   (0 params)
+        platt  logistic tilt               (2 params, low variance)
+        iso    isotonic / PAV              (k params, high variance)
+
+    `none` vs `platt` is decided by whichever generalises better on the tail —
+    both are low-variance, so the lower held-out logloss simply wins. The
+    flexible, high-variance isotonic map is then adopted ONLY if it beats that
+    winner by a real margin (Occam, refereed out-of-sample, with the bar
+    shrinking as the judged slice grows so isotonic is trusted more with more
+    data). This is what stops a sparse low-probability holdout from deploying a
+    pathologically overfit isotonic step map — PAV can collapse a 3-sample block
+    to 0 or 1 — when the raw stack or a gentle Platt tilt actually generalises
+    better. The chosen parametric map is refit on ALL preds; isotonic
+    abstention ships None.
+
+    Returns (cal, race): `cal` is a Platt dict, an isotonic dict, or None;
+    `race` is a metrics dict (judged on the tail) or None when no race ran."""
+    if not preds:
+        return None, None
+    platt_all = fit_platt(preds)
+    if len(preds) < min_race:
+        return platt_all, None
+    c2 = int(len(preds) * frac)
+    judge = preds[c2:]
+    n_j = len(judge)
+    if n_j < 1:
+        return platt_all, None
+
+    def _ll(cal):
+        tot = 0.0
+        for p, y in judge:
+            q = max(1e-5, min(1 - 1e-5, apply_cal(cal, p)))
+            tot += -(y * math.log(q) + (1 - y) * math.log(1 - q))
+        return tot / n_j
+
+    def _brier(cal):
+        return sum((max(1e-5, min(1 - 1e-5, apply_cal(cal, p))) - y) ** 2
+                   for p, y in judge) / n_j
+
+    cal_platt = fit_platt(preds[:c2])
+    cal_iso = fit_isotonic(preds[:c2])
+    ll = {"none": _ll(None), "platt": _ll(cal_platt), "iso": _ll(cal_iso)}
+    # base = the robust low-variance winner (raw stack vs gentle Platt tilt).
+    if ll["none"] <= ll["platt"]:
+        winner, base_ll, cal = "none", ll["none"], None
+    else:
+        winner, base_ll, cal = "platt", ll["platt"], platt_all
+    # margin in mean-logloss units: isotonic must clear it to justify its extra
+    # parameters. Floored at 0.002, and never below one judged sample's worth of
+    # total logloss (1/n_j) — a thin slice demands a bigger win before a spiky
+    # fit is trusted; a fat slice lets a genuine isotonic edge through.
+    margin = max(0.002, 1.0 / n_j)
+    if ll["iso"] <= base_ll - margin:
+        winner, cal = "iso", fit_isotonic(preds)
+    race = {"n_judge": n_j, "margin": round(margin, 5),
+            "ll": {k: round(v, 5) for k, v in ll.items()},
+            "brier": {"none": round(_brier(None), 5),
+                      "platt": round(_brier(cal_platt), 5),
+                      "iso": round(_brier(cal_iso), 5)},
+            "winner": winner,
+            # what the OLD inline rule (Platt default, isotonic if it merely
+            # edged Platt) would have deployed — kept for the OOS promotion gate.
+            "incumbent": ("iso" if ll["iso"] < ll["platt"] else "platt")}
+    return cal, race
+
+
 # ----------------------------------------------------- drift detection
 
 

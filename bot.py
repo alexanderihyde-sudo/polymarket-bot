@@ -2582,7 +2582,8 @@ def brain_train(account, drop_move=False, force=False):
         return {k: BRAIN[k] for k in ("n", "n_eff", "w", "specialists",
                                       "cat_specialists", "oos",
                                       "skill_factor", "pat_feats", "kind",
-                                      "models", "stack", "cal", "importance",
+                                      "models", "stack", "cal", "cal_race",
+                                      "importance",
                                       "calibration_table") if k in BRAIN}
     di = BRAIN.get("drift_i") or 0
     # GLOBAL training/CV/zoo data uses the pre-sports feature space (_global_x):
@@ -2716,23 +2717,14 @@ def brain_train(account, drop_move=False, force=False):
                                  else ml.predict(mods[n], x))
                            for n, wt in out["stack"]) / tot_w
             preds = [(stack_p(tr_models, x), y) for x, y in hold]
-            out["cal"] = ml.fit_platt(preds)
-            if len(preds) >= 40:
-                # race Platt vs isotonic HONESTLY: fit both on the first
-                # 60% of the holdout, judge on the last 40% (isotonic
-                # always wins on its own training points), then refit the
-                # winner on everything
-                c2 = int(len(preds) * 0.6)
-
-                def _cal_ll(c):
-                    tot = 0.0
-                    for p, y in preds[c2:]:
-                        q = max(1e-5, min(1 - 1e-5, ml.apply_cal(c, p)))
-                        tot += -(y * math.log(q) + (1 - y) * math.log(1 - q))
-                    return tot
-                if (_cal_ll(ml.fit_isotonic(preds[:c2]))
-                        < _cal_ll(ml.fit_platt(preds[:c2]))):
-                    out["cal"] = ml.fit_isotonic(preds)
+            # Robust calibration selection: a three-way, leakage-free OOS race
+            # (uncalibrated vs Platt vs isotonic) on the held-out tail that may
+            # ABSTAIN. Isotonic — high variance — is adopted only when it beats
+            # the raw stack / gentle Platt tilt by a real margin, so a sparse
+            # low-probability holdout can no longer deploy a pathologically
+            # overfit isotonic step map. cal_race records the contest either way
+            # (see ml.choose_calibration). Small holdouts keep the Platt default.
+            out["cal"], out["cal_race"] = ml.choose_calibration(preds)
             if champ in tr_models:
                 champ_model = tr_models[champ]
                 if champ == "logistic":

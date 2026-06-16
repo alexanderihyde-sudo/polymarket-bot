@@ -82,6 +82,59 @@ def test_ml_library():
                 (0.2, 0.4, 0.6, 0.8)) / 4
     ok(f"ml/platt near-identity on calibrated data (drift {drift:.3f})",
        drift < 0.12)
+    # CALIBRATION RACE robustness (ml.choose_calibration). The pre-fix inline
+    # race deployed isotonic whenever it merely *edged* Platt on the held-out
+    # tail. On the recent regime (~57% of trades at entry_price < 0.20) that
+    # isotonic overfits the sparse low-p bins and is WORSE out-of-sample than the
+    # raw stack — the live 140-step artifact that motivated this fix. The fix is
+    # a three-way OOS race (uncalibrated vs Platt vs isotonic) that may ABSTAIN.
+    def _calrace_lowp(seed, n=120):
+        r = random.Random(seed)
+        out = []
+        for _ in range(n):
+            p = r.uniform(0.05, 0.20) if r.random() < 0.6 else r.uniform(0.20, 0.85)
+            out.append((round(p, 4), 1.0 if r.random() < p else 0.0))
+        return out
+
+    def _old_cal_rule(preds):                  # exact replica of the pre-fix race
+        c2 = int(len(preds) * 0.6)
+
+        def _ll(c):
+            t = 0.0
+            for p, y in preds[c2:]:
+                q = max(1e-5, min(1 - 1e-5, ml.apply_cal(c, p)))
+                t += -(y * math.log(q) + (1 - y) * math.log(1 - q))
+            return t
+        return ("iso" if _ll(ml.fit_isotonic(preds[:c2]))
+                < _ll(ml.fit_platt(preds[:c2])) else "platt")
+
+    _patho = _calrace_lowp(3709)
+    _cal, _race = ml.choose_calibration(_patho)
+    ok("ml/cal-race: pre-fix rule would have deployed isotonic on this slice",
+       _old_cal_rule(_patho) == "iso")
+    ok("ml/cal-race: fix refuses the overfit isotonic on a sparse low-p holdout",
+       _race["winner"] != "iso"
+       and not (isinstance(_cal, dict) and "x" in _cal))
+    ok("ml/cal-race: chosen map strictly beats isotonic OOS (logloss AND Brier)",
+       _race["ll"][_race["winner"]] < _race["ll"]["iso"]
+       and _race["brier"][_race["winner"]] < _race["brier"]["iso"])
+    # capability preserved: a genuine monotone step miscalibration Platt cannot
+    # fix is still captured by isotonic when it wins the tail by a real margin.
+    def _calrace_step(seed, n=300):
+        r = random.Random(seed)
+        out = []
+        for _ in range(n):
+            p = round(r.uniform(0.02, 0.98), 4)
+            out.append((p, 1.0 if r.random() < (0.08 if p < 0.5 else 0.92) else 0.0))
+        return out
+    _cal2, _race2 = ml.choose_calibration(_calrace_step(2))
+    ok("ml/cal-race: isotonic still wins when the signal is genuinely strong",
+       _race2["winner"] == "iso" and isinstance(_cal2, dict) and "x" in _cal2)
+    # small holdouts keep the historical single-Platt behaviour, no race
+    _small = [(round(0.3 + 0.01 * i, 4), float(i % 2)) for i in range(20)]
+    _cs, _rs = ml.choose_calibration(_small)
+    ok("ml/cal-race: holdout < min_race == legacy Platt-on-all (no race)",
+       _rs is None and _cs == ml.fit_platt(_small))
     # permutation importance: junk feature scores ~0
     imp = ml.permutation_importance(ml.fit_gbm(ring), ring)
     ok("ml/importance: real feature beats noise",
