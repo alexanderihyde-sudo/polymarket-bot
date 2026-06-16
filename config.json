@@ -110,7 +110,7 @@
   },
   "news": {
     "enabled": true,
-    "min_move_1h": 0.05,
+    "min_move_1h": 0.08,
     "min_volume_24h": 2000,
     "max_dollars_per_trade": 20.0,
     "max_open_positions": 30,
@@ -120,16 +120,16 @@
     "min_hours_to_resolution": 6
   },
   "category_allocations": {
-    "Sports": 2500.0,
-    "Esports": 2500.0,
-    "Crypto": 2500.0,
-    "Politics": 2500.0,
-    "Economy": 2500.0,
-    "Business": 2500.0,
-    "Finance": 2500.0,
-    "Pop Culture": 2500.0,
-    "Science": 2500.0,
-    "Tech": 2500.0
+    "Sports": 1000.0,
+    "Esports": 1000.0,
+    "Crypto": 1000.0,
+    "Politics": 1000.0,
+    "Economy": 1000.0,
+    "Business": 1000.0,
+    "Finance": 1000.0,
+    "Pop Culture": 1000.0,
+    "Science": 1000.0,
+    "Tech": 1000.0
   },
   "daytrade": {
     "enabled": true,
