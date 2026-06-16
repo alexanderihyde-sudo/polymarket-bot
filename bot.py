@@ -282,15 +282,23 @@ def websocket_loop(account):
         try:
             toks = list({(p.get("legs") or [{}])[0].get("token_id")
                          for p in list(account["positions"]) if p.get("legs")})
-            toks = [t for t in toks if t][:4000]   # cap the subscribe payload
+            toks = [t for t in toks if t]
             if not toks:
                 time.sleep(3)
                 continue
+
+            def _open(w, _t=toks):
+                # subscribe in chunks so even thousands of tokens (the no-cap
+                # floor) ALL get a live feed without one oversized frame
+                for i in range(0, len(_t), 500):
+                    try:
+                        w.send(json.dumps({"assets_ids": _t[i:i + 500],
+                                           "type": "market"}))
+                    except Exception:
+                        break
+                WS_STATS.update(connected=True, assets=len(_t))
             ws = websocket.WebSocketApp(
-                CLOB_WS, on_message=_ws_on_message,
-                on_open=lambda w: (w.send(json.dumps(
-                    {"assets_ids": toks, "type": "market"})),
-                    WS_STATS.update(connected=True, assets=len(toks))),
+                CLOB_WS, on_message=_ws_on_message, on_open=_open,
                 on_error=lambda w, e: None,
                 on_close=lambda w, *a: WS_STATS.update(connected=False))
 
@@ -7069,10 +7077,14 @@ def dashboard_state():
     cfg = load_config()
     account = load_account(cfg)
     positions = []
+    # at thousands of positions (the no-cap floor) the heavy per-row sparkline
+    # path + entry context would balloon the payload (6MB+ every 2s) — drop them
+    # past a threshold so the table stays light; the core columns stay live.
+    lite = len(account["positions"]) > 800
     for p in account["positions"]:
         value = position_value(p)
         leg0 = p["legs"][0]
-        positions.append({
+        row = {
             "strategy": p["strategy"], "name": p["name"], "cost": p["cost"],
             "side": ("ALL outcomes (locked)" if p["strategy"] == "arbitrage"
                      else leg0.get("outcome") or ("Yes" if leg0["token_index"] == 0 else "No")),
@@ -7083,10 +7095,11 @@ def dashboard_state():
             "last_price": p.get("last_price"),
             "last_checked": p.get("last_checked"),
             "stop": p.get("stop"), "target": p.get("target"),
-            "context": p.get("context"),
-            "path": p.get("path", [])[-16:],   # enough for the row sparkline;
-            # full 4.6MB-at-1000-positions payloads choked the 2s dashboard poll
-        })
+        }
+        if not lite:
+            row["context"] = p.get("context")
+            row["path"] = p.get("path", [])[-16:]
+        positions.append(row)
     invested = round(sum(x["value"] for x in positions), 2)
     cost_basis = sum(p["cost"] for p in account["positions"])
     history = []
