@@ -479,43 +479,49 @@ def test_augmented_arb_guard():
 
 
 def test_trade_floor():
-    # OWNER DIRECTIVE (2026-06-15): hold a position on EVERY buyable market — NO
-    # CAP. Buys every market it pages that we don't hold + has a sane ask, until
-    # cash runs out. In-game markets eligible (owner lifted the ban). Re-running
-    # is a no-op once every market is held. Cash is the ONLY hard rail.
-    saved_get, saved_ig = bot.get_json, bot.is_in_game
+    # OWNER STRATEGY (edge -> use -> ROI/day): the floor is a SELECTIVE edge
+    # harvester — it buys ONLY intraday favorites (ask in [0.75,0.92] resolving
+    # <24h), ranked by ROI/day, small stake. Longshots (<0.75) and multi-day
+    # favorites are GATED OUT (they were ~$800 of the -$848 loss). Cash is the
+    # only hard rail.
+    import datetime
+    saved_get = bot.get_json
+    now = bot.now_utc()
+    soon = (now + datetime.timedelta(hours=6)).isoformat()    # intraday
+    later = (now + datetime.timedelta(days=5)).isoformat()    # multi-day
 
     def fake_markets(url, params=None, **k):
         if (params or {}).get("offset", 0) > 0:
-            return []                       # single page of 60 markets
-        return [{"id": str(1000 + i), "question": f"Q{i}?",
-                 "clobTokenIds": json.dumps([f"t{i}", f"u{i}"]),
-                 "bestAsk": "0.50", "events": [{"id": f"e{i}"}],
-                 "category": "Crypto"} for i in range(60)]
+            return []
+        mk = lambda i, ask, end: {
+            "id": str(1000 + i), "question": f"Q{i}?",
+            "clobTokenIds": json.dumps([f"t{i}", f"u{i}"]),
+            "bestAsk": str(ask), "endDate": end,
+            "events": [{"id": f"e{i}"}], "category": "Crypto"}
+        return ([mk(i, 0.85, soon) for i in range(0, 30)]      # intraday fav -> BUY
+                + [mk(i, 0.10, soon) for i in range(30, 40)]   # longshot -> skip
+                + [mk(i, 0.85, later) for i in range(40, 50)]) # multi-day -> skip
     bot.get_json = fake_markets
-    bot.is_in_game = lambda m: m.get("id") == "1003"   # one live market
+    cfg = {"floor_stake": 2.0, "floor_edge_gate": {
+        "buy_price_min": 0.75, "buy_price_max": 0.92,
+        "max_hours_to_resolution": 24, "max_stake_per_position": 3.0}}
     try:
         acct = {"positions": [], "cash": 1000.0}
-        bot.maintain_trade_floor({"floor_stake": 1.0}, acct)
-        ok("floor/buys EVERY buyable market (no cap)",
-           len(acct["positions"]) == 60)
-        ok("floor/in-game markets eligible (owner lifted ban)", any(
-            l["market_id"] == "1003"
-            for p in acct["positions"] for l in p["legs"]))
+        bot.maintain_trade_floor(cfg, acct)
+        held = [int(l["market_id"]) for p in acct["positions"] for l in p["legs"]]
+        ok("floor/buys the intraday favorites", len(acct["positions"]) == 30)
+        ok("floor/gates out longshots (<0.75)", all(m < 1030 for m in held))
+        ok("floor/gates out multi-day favorites", all(m < 1040 for m in held))
         ok("floor/cash never goes negative", acct["cash"] >= 0)
-        ok("floor/fills are explore + flagged", all(
-            p["strategy"] == "explore" and p["context"].get("floor_fill")
+        ok("floor/fills tagged floor_fill + roi_per_day", all(
+            p["context"].get("floor_fill") and "roi_per_day" in p["context"]
             for p in acct["positions"]))
-        n = len(acct["positions"])
-        bot.maintain_trade_floor({"floor_stake": 1.0}, acct)
-        ok("floor/no-op once every market is held", len(acct["positions"]) == n)
-        # cash is the only cap: tiny balance stops it early, never overdraws
         acct2 = {"positions": [], "cash": 5.0}
-        bot.maintain_trade_floor({"floor_stake": 1.0}, acct2)
-        ok("floor/cash is the only cap", len(acct2["positions"]) <= 5
+        bot.maintain_trade_floor(cfg, acct2)
+        ok("floor/cash is the only cap", len(acct2["positions"]) <= 3
            and acct2["cash"] >= 0)
     finally:
-        bot.get_json, bot.is_in_game = saved_get, saved_ig
+        bot.get_json = saved_get
 
 
 def test_ws_price_feed():

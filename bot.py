@@ -6068,28 +6068,37 @@ def open_position(account, opp, cfg=None):
 
 
 def maintain_trade_floor(cfg, account):
-    """OWNER DIRECTIVE (2026-06-15): hold a position on EVERY buyable market —
-    NO CAP. Each scan, page the ENTIRE active-market universe (by volume) and
-    open a small position on every market we don't already hold, until the
-    universe is exhausted or cash runs out. Priced off Gamma's cached bestAsk
-    (no per-market book call). Stake = cfg['floor_stake'] (kept small so the
-    cash stretches across every single market).
+    """OWNER STRATEGY (2026-06-15, edge -> use -> ROI/day): a SELECTIVE,
+    breadth-maximizing EDGE HARVESTER — not the old buy-everything bleeder
+    (that lost -$848: ~$800 of it from longshots <0.75 and multi-day favorites,
+    -40% to -98% ROI). KEPT zone = INTRADAY FAVORITES: ask in
+    [floor_edge_gate.buy_price_min, buy_price_max] resolving within
+    max_hours_to_resolution (the band x time cell whose realized ROI was
+    positive). Among those it RANKS by ROI-PER-DAY ((1-price)/days-to-end — the
+    same velocity key the main scanner uses) so when cash binds the fastest-
+    recycling favorites fill first and the longshot/multi-day tail fills NEVER.
+    Small flat stake (the per-trade edge is THIN + only weakly confirmed —
+    breadth, not size, captures it).
 
-    HARD RAIL — the only check the floor will not bypass:
-      * cash balance: never overdraws the (paper) account.
-    The soft sizing gates (heat, sub-account budget, category allocation,
-    per-cell diversity, order governor) AND the in-game ban are bypassed on
-    purpose (owner). The daily-loss circuit breaker still returns from run_pass
-    BEFORE this runs, so a breaker day pauses the floor along with everything."""
-    stake = float(cfg.get("floor_stake", 1.0)) or 1.0
+    HARD RAIL — the only check the floor won't bypass: cash (never overdraw).
+    Soft gates + in-game ban stay bypassed (owner). The daily-loss breaker still
+    returns from run_pass BEFORE this. Existing longshot positions from the old
+    policy are left to settle out naturally (explore holds to resolution) — the
+    floor just stops BUYING them, so the book converges to the +EV zone."""
+    g = cfg.get("floor_edge_gate", {})
+    lo = float(g.get("buy_price_min", 0.75))
+    hi = float(g.get("buy_price_max", 0.92))
+    max_hrs = float(g.get("max_hours_to_resolution", 24))
+    cap = float(g.get("max_stake_per_position", 3.0))
+    stake = min(float(cfg.get("floor_stake", 2.0)) or 2.0, cap)
+    if account["cash"] < stake:
+        return
     held_mids = {str(l.get("market_id")) for p in account["positions"]
                  for l in (p.get("legs") or [])}
-    opened = 0
+    now = now_utc()
+    cands = []
     offset = 0
-    while offset < 40000:                        # sanity stop, NOT a cap — Gamma
-        # returns empty once every active market has been paged
-        if account["cash"] < stake:
-            break                                # HARD RAIL: out of cash
+    while offset < 40000:                        # page the active universe
         markets = get_json(f"{GAMMA}/markets", params={
             "active": "true", "closed": "false", "order": "volume24hr",
             "ascending": "false", "limit": 100, "offset": offset}) or []
@@ -6097,42 +6106,55 @@ def maintain_trade_floor(cfg, account):
             break
         offset += 100
         for m in markets:
-            if account["cash"] < stake:
-                break
             mid = str(m.get("id") or "")
             tokens = jlist(m.get("clobTokenIds"))
             if not mid or mid in held_mids or not tokens:
                 continue
-            # Owner lifted the in-game ban for the floor (2026-06-15, "you can
-            # buy in a live game") — live/in-game markets are eligible here.
             price = fnum(m.get("bestAsk"), 0.0)
-            if not (0.02 <= price <= 0.99):
-                continue                        # need a sane, fillable ask
-            shares = max(1, int(stake / price))
-            cost = round(shares * price, 2)
-            if cost <= 0 or cost > account["cash"]:
-                continue                        # HARD RAIL: never overdraw cash
-            account["cash"] -= cost
-            account["positions"].append({
-                "strategy": "explore",
-                "event_id": str((m.get("events") or [{}])[0].get("id") or mid),
-                "category": m.get("category") or "Other",
-                "context": {"floor_fill": True},
-                "stop": 0.02, "target": 0.995,
-                "name": m.get("question", "?"),
-                "neg_risk_augmented": False,
-                "shares": shares, "cost": cost, "entry_price": round(price, 4),
-                "legs": [{"market_id": mid, "question": m.get("question", "?"),
-                          "token_index": 0, "token_id": tokens[0],
-                          "price": round(price, 4), "outcome": "Yes",
-                          "settled": False, "proceeds": 0.0}],
-                "opened": now_utc().isoformat(timespec="seconds"),
-            })
-            held_mids.add(mid)
-            opened += 1
+            if not (lo <= price <= hi):
+                continue                         # FAVORITE band only — gates out
+                # longshots (<0.75: -30% to -98%) and the dead 0.93+ tail
+            end = parse_end_date(m)
+            if not end:
+                continue
+            hrs = (end - now).total_seconds() / 3600.0
+            if not (0 < hrs <= max_hrs):
+                continue                         # INTRADAY only — gates out the
+                # multi-day favorites (-40% to -66%); the whole edge is same-day
+            days = max(hrs / 24.0, 1.0 / 24.0)
+            roi_day = (1.0 - price) / days        # ROI-per-day velocity key
+            cands.append((roi_day, mid, m, price, tokens[0]))
+    cands.sort(key=lambda c: c[0], reverse=True)  # highest ROI/day fills first
+    opened = 0
+    for roi_day, mid, m, price, tok in cands:
+        if account["cash"] < stake:
+            break                                # spend the budget best-first
+        shares = max(1, int(stake / price))
+        cost = round(shares * price, 2)
+        if cost <= 0 or cost > account["cash"]:
+            continue
+        account["cash"] -= cost
+        account["positions"].append({
+            "strategy": "explore",
+            "event_id": str((m.get("events") or [{}])[0].get("id") or mid),
+            "category": m.get("category") or "Other",
+            "context": {"floor_fill": True, "roi_per_day": round(roi_day, 3)},
+            "stop": 0.02, "target": 0.995,
+            "name": m.get("question", "?"),
+            "neg_risk_augmented": False,
+            "shares": shares, "cost": cost, "entry_price": round(price, 4),
+            "legs": [{"market_id": mid, "question": m.get("question", "?"),
+                      "token_index": 0, "token_id": tok,
+                      "price": round(price, 4), "outcome": "Yes",
+                      "settled": False, "proceeds": 0.0}],
+            "opened": now_utc().isoformat(timespec="seconds"),
+        })
+        held_mids.add(mid)
+        opened += 1
     if opened:
-        note(f"TRADE FLOOR: +{opened} positions -> {len(account['positions'])} "
-             f"active (buying every buyable market; cash ${account['cash']:.2f})")
+        note(f"TRADE FLOOR: +{opened} edge positions (intraday favorites "
+             f"{lo:.2f}-{hi:.2f} <{max_hrs:.0f}h, ROI/day-ranked) -> "
+             f"{len(account['positions'])} active; cash ${account['cash']:.2f}")
 
 
 def settle_positions(account):
