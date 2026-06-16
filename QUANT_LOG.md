@@ -2346,3 +2346,4 @@ AUTOPILOT: shipped nothing — judge chose nothing: Ship nothing. I verified eve
 #4 (news_backed for explore) is additive plumbing with zero measured PnL — activity for its own sake.
 
 Honest default: ship nothing this cycle.
+2026-06-16 AUTOPILOT: shipped nothing — adversarial review killed it: safety-rail violation flagged. commit 1cdc209
