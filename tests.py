@@ -396,12 +396,49 @@ def test_scan_pairs_dup_threshold():
         bot.get_json, bot.book_stats = saved_get, saved_book
 
 
+def test_category_never_blocked():
+    # Owner policy "never ever stop betting on a category" (2026-06-15):
+    # defense-in-depth. The producer (compute_learning) already emits
+    # blocked_categories == [], but the CONSUMER paths must IGNORE the signal
+    # too, so even a poisoned non-empty list can never zero a category — losers
+    # downsize via a floored category_mult instead. Structural tripwire: if a
+    # future change re-introduces a per-category skip in the high_prob/explore
+    # or daytrade paths, this test fails. (The hard 0-size rails — in-game ban,
+    # daily-loss breaker — are deliberately NOT touched and not asserted here.)
+    import inspect
+    src = inspect.getsource(bot)
+    ok("never-block/no high_prob+explore skip on blocked_categories",
+       "category in blocked_categories" not in src)
+    ok("never-block/no daytrade skip on blocked_categories",
+       'dt.get("blocked_categories")' not in src)
+    # loss_floor pinned in config (authoritative, owner-visible); the internal
+    # floor is hard-guarded max(0.05, ...) so it is > 0 for ANY configured value.
+    cfg = json.load(open("config.json"))
+    flr = cfg.get("learning", {}).get("loss_floor")
+    ok("never-block/loss_floor pinned in config and > 0",
+       isinstance(flr, (int, float)) and flr > 0)
+    # a category drowning in deep losses still downsizes to the floor, never 0,
+    # and the floor is driven by loss_floor (not a hardcoded constant).
+    import datetime
+    recent = (bot.now_utc() - datetime.timedelta(days=1)).isoformat(
+        timespec="seconds")
+    settled = ([{"strategy": "explore", "pnl": +0.20, "entry_price": 0.90,
+                 "category": "Tech", "closed": recent, "context": {}}] * 5
+               + [{"strategy": "explore", "pnl": -3.0, "entry_price": 0.90,
+                   "category": "Tech", "closed": recent, "context": {}}] * 3)
+    cm = bot.compute_learning(
+        {"settled": settled, "cash": 9000.0, "positions": []})[
+        "explore"]["category_mult"]
+    ok("never-block/deep-losing category floored > 0, driven by loss_floor",
+       0 < cm.get("Tech", 0) and cm.get("Tech") == max(0.05, flr))
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
        test_adaptive_category_sizing, test_never_zero_bets,
-       test_scan_pairs_dup_threshold)
+       test_category_never_blocked, test_scan_pairs_dup_threshold)
 
 if __name__ == "__main__":
     t0 = time.time()

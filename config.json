@@ -70,6 +70,7 @@
     "min_book_imbalance": 0.0
   },
   "learning": {
+    "loss_floor": 0.25,
     "protected_categories": [
       "Crypto"
     ]

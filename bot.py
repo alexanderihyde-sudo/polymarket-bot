@@ -901,7 +901,8 @@ def compute_learning(account):
                 elif v["pnl"] >= -2:
                     cat_mult[c] = 0.5          # mild recent loss: half size
                 else:
-                    cat_mult[c] = 0.25         # deep recent loss: info-only size
+                    cat_mult[c] = floor        # deep recent loss: info-only size,
+                    # floored at learning.loss_floor (max(0.05, ...) — never 0)
             blocked_cats = []                  # categories are NEVER hard-blocked
 
         out[strat] = {"settled": n, "wins": wins,
@@ -5591,15 +5592,13 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                 continue   # one probe per EVENT — no exact-score stacking,
                 # within this scan AND across scans (held event ids seeded)
             sports_probe = True
-        elif category in blocked_categories or (
-                is_sport and "Sports" in blocked_categories):
-            continue  # the bot learned this market type loses money. Use the
-            # name-based is_sport flag (already _SPORTSY/cluster/gameStartTime
-            # aware) so a blocked Sports cohort also catches sport-shaped
-            # markets whose gamma category tag is missing/wrong (e.g. obscure
-            # foreign football: Vaasan Palloseura, FF Jaro/HJK) — those slipped
-            # the tag-only check and were the entire live loss (-$12.92 sports
-            # vs +$2.97 everything else).
+        # NEVER-BLOCK (owner policy 2026-06-14, reaffirmed 2026-06-15): a losing
+        # category is DOWNSIZED via category_mult (floored at learning.loss_floor,
+        # never 0) — it is never skipped to zero bets. blocked_categories is
+        # ignored on purpose and kept in the signature for back-compat only; a
+        # poisoned non-empty list can no longer stop trading a category. The real
+        # 0-size rails (in-game ban, daily-loss circuit breaker) and the
+        # concentration cap below are deliberately untouched.
         if cat_counts.get(category, 0) >= cat_cap:
             continue  # concentration limit reached for this market type
         cat_counts[category] = cat_counts.get(category, 0) + 1
@@ -6503,8 +6502,8 @@ def daytrade_loop(cfg, account):
                 # specialist and the opportunity record (no recompute, no
                 # second network call at decision time).
                 dt_category = market_category(m)
-                if dt_category in (dt.get("blocked_categories") or []):
-                    continue  # learning says daytrades in this category lose
+                # NEVER-BLOCK (owner policy): a losing daytrade category is
+                # downsized via category_mult, never skipped to zero bets.
                 adj = brain_adjust("daytrade", price,
                                    {"spread": sb["spread"],
                                     "imbalance": sb["imbalance"],
