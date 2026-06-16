@@ -614,17 +614,29 @@ def save_account(account):
 
 
 def snapshot_loop(account):
-    """Keep the dashboard's account file fresh ~every 2s, INDEPENDENT of the
-    scan loop. dashboard_state() and the 400ms SSE tick both read ACCOUNT_FILE
-    from disk, so when a heavy run_pass (the 200-position floor settle, the
-    ~2min memory warm-start, brain_train) blocks the single-threaded main loop,
-    the file — and the whole dashboard — used to freeze for minutes. This daemon
-    only WRITES the live snapshot (atomic, last-writer-wins with the main loop;
-    a rare mid-mutation serialize just raises and is retried), so equity +
-    positions keep streaming to the browser even mid-scan. It deliberately does
+    """Keep the dashboard LIVE in ~real time, INDEPENDENT of the scan loop:
+    every ~2s, mark every open position to market from bulk book fetches and
+    rewrite ACCOUNT_FILE (atomic). dashboard_state() and the 400ms SSE tick both
+    read ACCOUNT_FILE from disk, so this makes ALL open positions (hundreds — or
+    the owner's 1,000-position floor) tick in the browser like Polymarket, even
+    while a heavy run_pass / the ~2min memory warm-start blocks the single-
+    threaded main loop. DISPLAY-ONLY: it refreshes last_price/last_mid for
+    mark-to-market; the main loop still OWNS exits, settles and opens. Iterates a
+    COPY and swallows errors so it never fights the main loop's mutations. Does
     NOT touch HEARTBEAT — a genuinely hung loop must still trip the watchdog."""
     while True:
         try:
+            poss = list(account["positions"])
+            toks = [(p["legs"][0].get("token_id")
+                     if p.get("legs") and not p["legs"][0].get("settled")
+                     else None) for p in poss]
+            books = fetch_books_bulk([t for t in toks if t]) or {}
+            for p, t in zip(poss, toks):
+                bs = books.get(str(t)) if t else None
+                if bs and bs.get("bid") is not None and bs.get("ask") is not None:
+                    p["last_price"] = bs["bid"]
+                    p["last_mid"] = round((bs["bid"] + bs["ask"]) / 2, 4)
+                    p["last_checked"] = now_utc().isoformat(timespec="seconds")
             save_account(account)
         except Exception:
             pass
@@ -5984,7 +5996,8 @@ def maintain_trade_floor(cfg, account):
                  for l in (p.get("legs") or [])}
     stake = float(cfg.get("explore", {}).get("max_dollars_per_trade", 1.0)) or 1.0
     opened = 0
-    for offset in range(0, 1600, 100):          # up to ~1,600 liquid candidates
+    for offset in range(0, 8000, 100):          # page deep enough to fill a
+        # large floor (e.g. 1,000) from the active-market universe by volume
         if have + opened >= floor:
             break
         markets = get_json(f"{GAMMA}/markets", params={

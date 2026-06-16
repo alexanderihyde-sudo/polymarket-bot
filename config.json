@@ -3,7 +3,7 @@
   "scan_interval_minutes": 1,
   "monitor_interval_seconds": 1,
   "settle_check_seconds": 60,
-  "min_active_trades": 200,
+  "min_active_trades": 1000,
   "research_recorder": {
     "enabled": true,
     "interval_seconds": 30,
