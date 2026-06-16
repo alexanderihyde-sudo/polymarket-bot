@@ -3084,7 +3084,7 @@ def brain_online_learn(pos, pnl):
     brain's OWN per-settle logloss, and when its predictions stop
     describing the world, the next retrain re-anchors on post-drift data
     only instead of averaging two different regimes together."""
-    if not BRAIN.get("w") or pos["strategy"] == "arbitrage":
+    if not BRAIN.get("w") or pos["strategy"] == "arbitrage" or dead_cohort(pos):
         return
     try:
         x = _brain_x(pos["strategy"], pos.get("entry_price"),
