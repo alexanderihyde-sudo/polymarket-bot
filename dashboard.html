@@ -357,12 +357,18 @@ function renderSmart() {
       layout: { background: { color: "transparent" }, textColor: "#8b8b95", fontSize: 10 },
       grid: { vertLines: { visible: false }, horzLines: { color: "rgba(255,255,255,.055)" } },
       rightPriceScale: { borderColor: "#2c2c33" },
+      leftPriceScale: { visible: true, borderColor: "#2c2c33" },
       timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, tickMarkFormatter: LT, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     });
-    brainSk = smartChart.addLineSeries({ color: "#3ad29f", lineWidth: 2, title: "brain" });
-    m15Sk = smartChart.addLineSeries({ color: "#b08cff", lineWidth: 2, title: "vs market" });
+    // brain skill (~0..0.3) and ML-vs-market edge (~±0.01) live on DIFFERENT
+    // scales — sharing one axis crushed "vs market" into a dead flat line at 0.
+    // Each gets its own axis so both show their real movement.
+    brainSk = smartChart.addLineSeries({ color: "#3ad29f", lineWidth: 2, title: "brain", priceScaleId: "right" });
+    m15Sk = smartChart.addLineSeries({ color: "#b08cff", lineWidth: 2, title: "vs market", priceScaleId: "left" });
     brainSk.createPriceLine({ price: 0, color: "#8b8b95", lineWidth: 1,
       lineStyle: 3, title: "baseline" });
+    m15Sk.createPriceLine({ price: 0, color: "#8b8b95", lineWidth: 1,
+      lineStyle: 3, title: "" });
   }
   const hist = S.skill_history;
   if (hist.length === lastSkillLen) return;
