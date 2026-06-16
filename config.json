@@ -9,7 +9,7 @@
     "pages_per_cycle": 8
   },
   "quant": {
-    "kelly_fraction": 0.4,
+    "kelly_fraction": 0.5,
     "max_spread": 0.02,
     "min_book_imbalance": 0.25,
     "momentum_lookback_hours": 6,
@@ -79,7 +79,7 @@
     "arbitrage": 3000.0,
     "high_prob": 5250.0,
     "news": 0.0,
-    "explore": 1000.0,
+    "explore": 3000.0,
     "daytrade": 0.0
   },
   "risk": {
