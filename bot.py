@@ -6295,6 +6295,21 @@ def open_position(account, opp, cfg=None):
     ORDER_TIMES[:] = [t for t in ORDER_TIMES if now - t < 60]
     if len(ORDER_TIMES) >= 30:
         return  # governor: hard ceiling of 30 order operations per minute
+    # DEDUP: never open a position whose leg collides with one already held on
+    # (market_id, token_index, strategy) — the exact key audit_books flags as a
+    # "duplicate open leg". held_ids()/REENTRY are snapshotted once per pass and
+    # race when the same market is opened twice in one pass (explore scan + the
+    # floor harvester), so the only leak-proof check is here at the final
+    # chokepoint, against the LIVE book. Arb baskets never self-collide (distinct
+    # token_index per leg); any cross-position collision is duplicate exposure we
+    # refuse. Different strategies on the same token are still allowed (the audit
+    # keys on strategy too); re-entry after a close still works (gone from book).
+    _held_legs = {(l.get("market_id"), l.get("token_index"), p["strategy"])
+                  for p in account["positions"] for l in p["legs"]}
+    if any((l.get("market_id"), l.get("token_index"), opp["strategy"]) in _held_legs
+           for l in opp["legs"]):
+        note(f"skip (duplicate open leg, already held): {opp['name'][:60]}")
+        return
     budget = strategy_budget(cfg, account, opp["strategy"]) if cfg else account["cash"]
     if budget < opp["cost"] or opp["cost"] > account["cash"]:
         note(f"skip (sub-account budget reached): {opp['name'][:60]}")

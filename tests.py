@@ -600,13 +600,40 @@ def test_ws_price_feed():
     ok("ws/malformed message ignored safely", "X" not in bot.PRICE_WS)
 
 
+def test_dedup_open_leg():
+    # open_position refuses a second position that collides with one already
+    # held on (market_id, token_index, strategy) — the exact key audit_books
+    # flags as a "duplicate open leg" — closing the explore/floor race that
+    # double-opened the same token. Arbitrage opps keep the path pure (skips
+    # breaker/heat/pattern/cluster; cfg=None -> budget is cash, no load_config).
+    bot.ORDER_TIMES[:] = []
+    acct = {"positions": [], "cash": 1000.0}
+
+    def opp(strat, tok, ti=0):
+        return {"strategy": strat, "event_id": None, "category": None,
+                "context": {}, "stop": None, "target": None,
+                "name": f"Mkt {tok}", "shares": 1, "cost": 1.0,
+                "entry_price": 0.8, "detail": "t",
+                "legs": [{"market_id": tok, "token_index": ti}]}
+    bot.open_position(acct, opp("arbitrage", "T1"))
+    bot.open_position(acct, opp("arbitrage", "T1"))          # exact duplicate
+    ok("dedup/blocks a duplicate (market,token_index,strategy)",
+       len(acct["positions"]) == 1)
+    bot.open_position(acct, opp("arbitrage", "T2"))          # different token
+    ok("dedup/allows a different token", len(acct["positions"]) == 2)
+    bot.open_position(acct, opp("arbitrage", "T1", ti=1))    # same mkt, other leg
+    ok("dedup/allows a different token_index on the same market",
+       len(acct["positions"]) == 3)
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_risk_and_money, test_oracles, test_crypto_explore_stake,
        test_adaptive_category_sizing, test_never_zero_bets,
        test_category_never_blocked, test_augmented_arb_guard,
-       test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold)
+       test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold,
+       test_dedup_open_leg)
 
 if __name__ == "__main__":
     t0 = time.time()
