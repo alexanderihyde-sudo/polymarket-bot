@@ -6215,7 +6215,14 @@ def position_risk(p):
     resolution books (binary markets can go to zero); the stop distance
     times shares for bracketed books — exactly how a desk counts heat."""
     if p.get("strategy") == "arbitrage":
-        return 0.0                       # payout locked at entry
+        # A COMPLETE dutch-book basket locks $1/share — zero risk. But an
+        # augmented negRisk event can activate a NEW outcome after entry; if it
+        # wins, a basket holding only the original legs pays $0 and loses the
+        # full stake. augmented_arb_alert() stamps that case, so it stops
+        # reporting $0 and counts as real heat (the "$499 shows as $0" bug).
+        if p.get("augmented_incomplete"):
+            return round(p.get("cost") or 0.0, 2)
+        return 0.0                       # complete basket: payout locked
     stop = p.get("stop") or 0
     entry = p.get("entry_price") or 0
     if stop > 0.03 and entry:
@@ -6556,6 +6563,11 @@ def augmented_arb_alert(account):
         active = [m for m in (ev[0].get("markets") or [])
                   if m.get("active") and not m.get("closed")]
         n_now, n_held = len(active), len(pos.get("legs") or [])
+        # accounting hook: stamp completeness so position_risk() counts an
+        # incomplete (grown) basket at full stake instead of $0. Complete
+        # baskets are re-checked every pass (not deduped), so later growth is
+        # caught; once flagged incomplete it persists (it stays incomplete).
+        pos["augmented_incomplete"] = n_now > n_held
         if n_now > n_held:
             AUGMENTED_NOTED.add(eid)
             note(f"AUGMENTED-ARB TAIL RISK: '{pos.get('name', '?')[:50]}' event "
@@ -8908,6 +8920,9 @@ def self_test():
                       "entry_price": 0.5, "shares": 60}) == 3.0)
     ok("risk: locked arbs risk nothing",
        position_risk({"strategy": "arbitrage", "cost": 500.0}) == 0.0)
+    ok("risk: incomplete augmented arb counts full stake",
+       position_risk({"strategy": "arbitrage", "cost": 499.0,
+                      "augmented_incomplete": True}) == 499.0)
     ok("risk: drawdown ladder de-risks",
        _dd_factor(4.5, [[2, 0.75], [4, 0.5], [6, 0.25]]) == 0.5)
     ok("risk: ladder restores at the peak",
