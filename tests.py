@@ -626,6 +626,33 @@ def test_dedup_open_leg():
        len(acct["positions"]) == 3)
 
 
+def test_arb_scanner_pagination():
+    # scan_arbitrage walks DEEPER than Gamma's 100/page top slice (offset
+    # pagination on a cadence) so the proven edge isn't capped at the most-
+    # liquid events. Events without negRisk are skipped, so no book fetches.
+    calls = []
+
+    def fake(url, params=None):
+        off = (params or {}).get("offset")
+        calls.append(off)
+        if "events" in url and off is not None and off < 200:
+            return [{"id": f"e{off}_{i}"} for i in range(100)]  # full page
+        return []
+    saved = bot.get_json
+    bot.get_json = fake
+    bot._ARB_DEEP_TS = 0.0   # force a deep-page refresh
+    try:
+        bot.scan_arbitrage({"arbitrage": {"events_to_scan": 100,
+                                          "max_cost_per_arb": 100.0,
+                                          "min_edge_cents": 1.5}}, set())
+        offs = [o for o in calls if o is not None]
+        ok("arb/scans the top page", 0 in offs)
+        ok("arb/paginates into the long tail (code floor 300)",
+           100 in offs and 200 in offs)
+    finally:
+        bot.get_json = saved
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
@@ -633,7 +660,7 @@ ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_adaptive_category_sizing, test_never_zero_bets,
        test_category_never_blocked, test_augmented_arb_guard,
        test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold,
-       test_dedup_open_leg)
+       test_dedup_open_leg, test_arb_scanner_pagination)
 
 if __name__ == "__main__":
     t0 = time.time()

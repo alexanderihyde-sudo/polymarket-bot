@@ -1796,15 +1796,35 @@ def lab(sample_target=400):
 
 # ------------------------------------------------- strategy 1: arbitrage
 
+_ARB_DEEP_TS = 0.0   # last time the deep (long-tail) arb pages were refreshed
+
+
 def scan_arbitrage(cfg, skip_ids, multiplier=1.0):
     """Find multi-outcome events whose YES prices sum to less than $1."""
     acfg = cfg["arbitrage"]
     max_cost = acfg["max_cost_per_arb"] * multiplier
     opportunities = []
-    events = get_json(f"{GAMMA}/events", params={
-        "active": "true", "closed": "false", "order": "volume24hr",
-        "ascending": "false", "limit": acfg["events_to_scan"],
-    }) or []
+    # Coverage: the top page (the most-liquid negRisk events) is scanned every
+    # call for latency, but arb is RAREST in the most-liquid events, so deeper
+    # pages (the long tail, where the dutch-book is less competed) are walked
+    # into on a slower cadence — widening the proven edge's reach without the
+    # ~1s fast loop ever hammering Gamma. Gamma caps a page at 100, so coverage
+    # beyond 100 REQUIRES offset pagination.
+    target = max(int(acfg.get("events_to_scan", 100)), 300)
+    offsets = [0]
+    global _ARB_DEEP_TS
+    if target > 100 and time.time() - _ARB_DEEP_TS > 15:
+        _ARB_DEEP_TS = time.time()
+        offsets += list(range(100, target, 100))
+    events = []
+    for _off in offsets:
+        _page = get_json(f"{GAMMA}/events", params={
+            "active": "true", "closed": "false", "order": "volume24hr",
+            "ascending": "false", "limit": 100, "offset": _off,
+        }) or []
+        events.extend(_page)
+        if len(_page) < 100:
+            break   # exhausted the negRisk universe
 
     for event in events:
         if not event.get("negRisk"):
