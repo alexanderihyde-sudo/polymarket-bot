@@ -527,6 +527,34 @@ def test_augmented_arb_guard():
         bot.AUGMENTED_NOTED.discard("EVSAME")
         bot.augmented_arb_alert({"positions": [dict(aug, event_id="EVSAME")]})
         ok("aug-arb/un-grown augmented basket stays silent", not notes)
+        # --- STEP 1: the flag now REFRESHES every cycle (no longer frozen at
+        #     first observation), clearing only after a conservative >1h stable
+        #     shrink so a transient Gamma under-report can't zero real heat.
+        #     EVFLEX is already in AUGMENTED_NOTED, so the OLD code would skip it
+        #     forever; the new code must re-evaluate it. ---
+        notes.clear()
+        flex = {"strategy": "arbitrage", "event_id": "EVFLEX",
+                "neg_risk_augmented": True, "name": "Augmented (flexing)",
+                "cost": 499.0, "legs": [{"market_id": "a"}, {"market_id": "b"}],
+                "augmented_incomplete": True}
+        bot.AUGMENTED_NOTED.add("EVFLEX")            # pretend the alert already fired
+        bot.get_json = lambda url, params=None, **k: [           # event SHRUNK to 2
+            {"markets": [{"active": True, "closed": False}] * 2}]
+        bot.augmented_arb_alert({"positions": [flex]})
+        ok("aug-arb/re-evaluated despite being alerted; <1h shrink keeps full risk",
+           flex.get("augmented_incomplete") is True
+           and bot.position_risk(flex) == 499.0)
+        flex["aug_shrunk_since"] = time.time() - bot.AUG_SHRINK_HOLD_S - 5
+        bot.augmented_arb_alert({"positions": [flex]})
+        ok("aug-arb/stable >1h shrink clears the flag (heat -> $0)",
+           flex.get("augmented_incomplete") is False
+           and bot.position_risk(flex) == 0.0)
+        bot.get_json = lambda url, params=None, **k: [           # event GROWS to 4
+            {"markets": [{"active": True, "closed": False}] * 4}]
+        bot.augmented_arb_alert({"positions": [flex]})
+        ok("aug-arb/re-arms full-stake heat when the event grows again",
+           flex.get("augmented_incomplete") is True
+           and bot.position_risk(flex) == 499.0)
     finally:
         bot.get_json, bot.note = saved_get, saved_note
 

@@ -6559,42 +6559,55 @@ def settle_positions(account):
 
 
 AUGMENTED_NOTED = set()
+AUG_SHRINK_HOLD_S = 3600   # an augmented basket must look complete this long
+                           # before its risk stamp clears (transient-blip guard)
 
 
 def augmented_arb_alert(account):
-    """Detection-only guard for negRisk-AUGMENTED arbitrage baskets. A COMPLETE
+    """Heat-accounting guard for negRisk-AUGMENTED arbitrage baskets. A COMPLETE
     negRisk basket is fully hedged — buying every outcome locks $1/share, so
     position_risk()==0 is correct. But an AUGMENTED event can ACTIVATE A NEW
     outcome after entry; if that new outcome wins, the basket (which bought only
-    the original outcomes) pays nothing and loses the full stake. This surfaces
-    any open augmented basket whose event has grown beyond the legs we hold, so
-    the tail risk is VISIBLE before the arb scanner is widened. Detection/logging
-    only — it does NOT change sizing, accounting, or exits (the position_risk
-    accounting fix is the adversarially-gated next step). Deduped per event."""
+    the original outcomes) pays nothing and loses the full stake. Every open
+    augmented basket is re-checked each cycle and its `augmented_incomplete`
+    flag — which position_risk() reads to count the basket at full stake instead
+    of $0 — is refreshed: set True the moment the event grows past our legs, and
+    cleared back to $0 only after the event has looked complete again for
+    >AUG_SHRINK_HOLD_S (so a transient Gamma under-report can't prematurely zero
+    real heat). Accounting + a deduped one-time alert; no resize, no exit."""
     for pos in account.get("positions", []):
         if pos.get("strategy") != "arbitrage" or not pos.get("neg_risk_augmented"):
             continue
         eid = str(pos.get("event_id") or "")
-        if not eid or eid in AUGMENTED_NOTED:
-            continue   # already raised, or no id — don't re-fetch every cycle
+        if not eid:
+            continue   # no id — can't re-check this basket
         ev = get_json(f"{GAMMA}/events", params={"id": eid})
         if not ev:
-            continue
+            continue   # transient fetch failure — never clears the risk stamp
         active = [m for m in (ev[0].get("markets") or [])
                   if m.get("active") and not m.get("closed")]
         n_now, n_held = len(active), len(pos.get("legs") or [])
-        # accounting hook: stamp completeness so position_risk() counts an
-        # incomplete (grown) basket at full stake instead of $0. Complete
-        # baskets are re-checked every pass (not deduped), so later growth is
-        # caught; once flagged incomplete it persists (it stays incomplete).
-        pos["augmented_incomplete"] = n_now > n_held
+        # ACCOUNTING (runs every cycle; this flag IS what position_risk reads):
         if n_now > n_held:
+            pos["augmented_incomplete"] = True        # event grew past our legs
+            pos.pop("aug_shrunk_since", None)         # growth cancels any clear
+        elif pos.get("augmented_incomplete"):
+            # looks complete again — clear CONSERVATIVELY: hold the risk until the
+            # shrink has persisted >AUG_SHRINK_HOLD_S, defaulting to the tail.
+            since = pos.get("aug_shrunk_since")
+            if since is None:
+                pos["aug_shrunk_since"] = time.time()     # start hold; stay risky
+            elif time.time() - since >= AUG_SHRINK_HOLD_S:
+                pos["augmented_incomplete"] = False
+                pos.pop("aug_shrunk_since", None)
+        # ALERT (loud once per event, deduped — the accounting above always runs):
+        if n_now > n_held and eid not in AUGMENTED_NOTED:
             AUGMENTED_NOTED.add(eid)
             note(f"AUGMENTED-ARB TAIL RISK: '{pos.get('name', '?')[:50]}' event "
                  f"now has {n_now} active outcomes but the basket holds only "
                  f"{n_held} legs — a newly-activated outcome can win and zero "
-                 f"this ${pos.get('cost', 0):.2f} basket (position_risk still "
-                 f"reports $0; accounting fix pending adversarial review)")
+                 f"this ${pos.get('cost', 0):.2f} basket; position_risk now "
+                 f"counts it at full stake until the event re-completes")
 
 
 BROAD_CATEGORIES = ["Sports", "Esports", "Crypto", "Politics", "Economy",
