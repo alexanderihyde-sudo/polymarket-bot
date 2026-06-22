@@ -56,6 +56,7 @@
     "max_dollars_per_trade": 150.0,
     "max_open_positions": 150,
     "max_open_per_category": 20,
+    "scan_pages": 6,
     "lane90": {
       "enabled": true,
       "buy_price_min": 0.9,

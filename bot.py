@@ -5832,15 +5832,23 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
     # 24h, so a single ascending-endDate sweep never reaches the classic
     # 24-48h candidates — each lane gets its own page budget.
     horizon = now_utc() + timedelta(days=hcfg["max_days_to_resolution"])
-    windows = [(min_h, hcfg["max_days_to_resolution"] * 24)]
+    # per-window page budget (each page = 100 markets). Default 6 == the prior
+    # hardcoded range(0,600,100), so this ships INERT; the lane window can later
+    # be widened on its own via lane90.scan_pages once the [hp-scan] log below
+    # shows it actually hitting its ceiling. max(1,..) keeps >=1 page (the scan
+    # is never silently zeroed).
+    pages = int(hcfg.get("scan_pages", 6))
+    lane_pages = int(lane.get("scan_pages", pages)) if lane_on else pages
+    windows = [(min_h, hcfg["max_days_to_resolution"] * 24, pages)]
     if lane_on:
         windows = [(lane.get("min_hours_to_resolution", 0.5),
-                    lane.get("max_hours_to_resolution", 24)),
+                    lane.get("max_hours_to_resolution", 24), lane_pages),
                    (hcfg.get("min_hours_to_resolution", 24),
-                    hcfg["max_days_to_resolution"] * 24)]
+                    hcfg["max_days_to_resolution"] * 24, pages)]
     markets = []
-    for w_lo, w_hi in windows:
-        for offset in range(0, 600, 100):
+    for w_lo, w_hi, win_pages in windows:
+        before, used = len(markets), 0
+        for offset in range(0, max(1, win_pages) * 100, 100):
             page = get_json(f"{GAMMA}/markets", params={
                 "active": "true", "closed": "false", "order": "endDate",
                 "ascending": "true", "limit": 100, "offset": offset,
@@ -5850,9 +5858,13 @@ def scan_high_prob(cfg, skip_ids, open_count, multiplier=1.0,
                 ).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }) or []
             markets += page
+            used += 1
             if len(page) < 100:
                 break
             time.sleep(0.2)
+        print(f"[hp-scan] {section} window {w_lo:.0f}-{w_hi:.0f}h: "
+              f"{used}/{win_pages} pages, {len(markets) - before} markets "
+              f"(ceiling {'HIT' if used >= win_pages else 'ok'})")
 
     opportunities = []
     for m in markets:

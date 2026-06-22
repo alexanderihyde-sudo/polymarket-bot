@@ -681,6 +681,32 @@ def test_arb_scanner_pagination():
         bot.get_json = saved
 
 
+def test_high_prob_scan_pages():
+    # STEP 2 ships INERT: the per-window page budget defaults to 6, so the paged
+    # offset sequence is byte-identical to the old hardcoded range(0,600,100).
+    # Lane off -> one (classic) window; dummy markets end in the past so scoring
+    # skips them and the only offset-bearing get_json calls are the page fetches.
+    calls = []
+
+    def fake(url, params=None, **k):
+        off = (params or {}).get("offset")
+        if "markets" in url and off is not None:
+            calls.append(off)
+            return [{"id": f"m{off}_{i}", "endDate": "2020-01-01T00:00:00Z"}
+                    for i in range(100)]                          # full page
+        return []
+    saved = bot.get_json
+    bot.get_json = fake
+    try:
+        cfg = {"high_probability": {"max_open_positions": 50,
+               "max_dollars_per_trade": 5.0, "max_days_to_resolution": 7}}
+        bot.scan_high_prob(cfg, set(), 0, bankroll=10000.0)
+        ok("hp-scan/default budget is the unchanged 6 pages (inert)",
+           calls == [0, 100, 200, 300, 400, 500])
+    finally:
+        bot.get_json = saved
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
@@ -688,7 +714,7 @@ ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_adaptive_category_sizing, test_never_zero_bets,
        test_category_never_blocked, test_augmented_arb_guard,
        test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold,
-       test_dedup_open_leg, test_arb_scanner_pagination)
+       test_dedup_open_leg, test_arb_scanner_pagination, test_high_prob_scan_pages)
 
 if __name__ == "__main__":
     t0 = time.time()
