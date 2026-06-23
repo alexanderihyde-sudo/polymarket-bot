@@ -6,31 +6,34 @@
 <title>POLYBOT · Paper Portfolio</title>
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://api.fontshare.com/v2/css?f[]=clash-display@600,700&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  /* ── Molten-Gold Luxury Obsidian Terminal — full redesign 2026-06-22 ── */
+  /* ── DEGEN TERMINAL — Bloomberg density × neo-brutalism, redesign 2026-06-23
+       (from 713-search research). Warm-blue near-black, ONE acid-lime accent,
+       mint/coral P&L, elevation by lightness not shadow. ── */
   :root {
-    --bg0:#0b0907; --bg1:#120f0c; --bg2:#1a1611; --bg3:#231d16;
-    --line:rgba(255,238,210,.08); --line2:rgba(255,238,210,.14);
-    --lit:inset 0 1px 0 rgba(255,247,235,.06);
-    --ink:#f4ece0; --ink2:#b6aa97; --ink3:#7d7363;
-    --gold:#f5a623; --gold-hi:#ffc24d; --gold-glow:rgba(245,166,35,.55); --gold-dim:rgba(245,166,35,.14);
-    --up:#46d39a; --up-glow:rgba(70,211,154,.35);
-    --dn:#ff5d52; --dn-glow:rgba(255,93,82,.32);
-    --blue:#5b9dff; --orange:#ff9d3c; --purple:#b98cff; --green:#5fd07e; --red:#ff6b7a;
+    --bg0:#0d0d11; --bg1:#131318; --bg2:#181820; --bg3:#1f1f29;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.16);
+    --lit:inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.4);
+    --ink:#eceaf0; --ink2:#b8b4c4; --ink3:#7e7a8c;
+    /* accent = acid-lime (kept under the --gold* names so all accent usages flip) */
+    --gold:#ccff00; --gold-hi:#ddff55; --gold-glow:rgba(204,255,0,.5); --gold-dim:rgba(204,255,0,.13);
+    --up:#00d395; --up-glow:rgba(0,211,149,.35);
+    --dn:#ff5c5c; --dn-glow:rgba(255,92,92,.32);
+    --blue:#5bc8ff; --orange:#ffb000; --purple:#ff7ab6; --green:#00d395; --red:#ff5c5c;
     --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
     --ui:"General Sans","Helvetica Neue",-apple-system,system-ui,sans-serif;
-    --disp:"Clash Display","General Sans",sans-serif;
+    --disp:"Bricolage Grotesque","Clash Display",var(--ui);
     --ease:cubic-bezier(.22,.61,.36,1);
     /* back-compat aliases so inline/JS var() refs keep resolving */
     --bg:var(--bg0); --card:var(--bg1); --card2:var(--bg2); --card3:var(--bg3);
     --muted:var(--ink2); --faint:var(--ink3); --dim:var(--ink2);
-    --accent:var(--gold); --amber:var(--gold-hi); --violet:var(--purple);
-    --green-bg:rgba(70,211,154,.12); --red-bg:rgba(255,93,82,.12);
+    --accent:var(--gold); --amber:#ffb000; --violet:var(--purple);
+    --green-bg:rgba(0,211,149,.12); --red-bg:rgba(255,92,92,.12);
     --sans:var(--ui); --display:var(--disp);
     --shadow:0 18px 44px -22px rgba(0,0,0,.85);
-    --hair:linear-gradient(90deg,transparent,rgba(255,238,210,.10),transparent);
+    --hair:linear-gradient(90deg,transparent,rgba(255,255,255,.10),transparent);
   }
   html { color-scheme: dark; background: var(--bg0); }
   * { box-sizing: border-box; margin: 0; }
@@ -38,13 +41,13 @@
     font: 400 13px/1.45 var(--ui); letter-spacing: .005em;
     -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
     background-image:
-      radial-gradient(1200px 520px at 72% -12%, rgba(245,166,35,.11), transparent 60%),
-      radial-gradient(900px 600px at 8% -4%, rgba(245,166,35,.05), transparent 55%);
+      radial-gradient(1100px 500px at 50% -16%, rgba(204,255,0,.05), transparent 60%),
+      radial-gradient(900px 600px at 100% 0%, rgba(91,200,255,.04), transparent 55%);
     background-attachment: fixed; }
-  /* film grain — kills OLED banding, reads tactile/photographed */
+  /* signature texture: feTurbulence grain, soft-light — a human fingerprint */
   body::after { content: ""; position: fixed; inset: 0; z-index: 9999; pointer-events: none;
-    opacity: .5; mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.045'/%3E%3C/svg%3E"); }
+    opacity: .6; mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E"); }
   body > * { position: relative; z-index: 1; }
   /* futuristic interactive ripple field — glowing wavefronts emanate from the
      cursor (and each settle); screen-blended so it only ADDS light, never
@@ -82,23 +85,32 @@
   #layout aside { animation-delay: .16s; }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
-  #topbar { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
-    padding: 14px 28px; position: sticky; top: 0; z-index: 80;
-    background: rgba(13,10,8,.86); backdrop-filter: saturate(1.3) blur(16px);
+  #topbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 28px; position: sticky; top: 0; z-index: 80;
+    background: rgba(13,13,17,.9); backdrop-filter: saturate(1.3) blur(16px);
     -webkit-backdrop-filter: saturate(1.3) blur(16px);
     border-bottom: 1px solid var(--line2); box-shadow: 0 10px 34px -14px rgba(0,0,0,.9), var(--lit); }
-  .logo { font: 600 17px var(--disp); letter-spacing: .01em; color: var(--ink); white-space: nowrap; }
-  .logo::before { content: "◆"; color: var(--gold); margin-right: 9px; text-shadow: 0 0 14px var(--gold-glow); }
+  /* terminal chrome: traffic dots + shell-prompt brand */
+  .termdots { width: 10px; height: 10px; border-radius: 50%; background: #ff5c5c; flex: none;
+    box-shadow: 17px 0 0 #ffb000, 34px 0 0 #00d395; margin-right: 42px; }
+  .logo { font: 600 12.5px var(--mono); letter-spacing: .02em; text-transform: lowercase;
+    color: var(--ink2); white-space: nowrap; }
+  .logo::before { content: "polybot@paper:~$ "; color: var(--gold); }
   .logo .mark { display: none; }
-  .papertag { font: 600 9.5px var(--mono); letter-spacing: .16em; text-transform: uppercase;
-    color: var(--gold-hi); border: 1px solid var(--gold-dim); background: var(--gold-dim);
-    border-radius: 5px; padding: 3px 8px; margin-left: 9px; vertical-align: 2px; }
-  #symprice { display: flex; align-items: baseline; gap: 13px; margin-left: auto; }
-  #symprice .px { font: 600 52px/1 var(--mono); letter-spacing: -.035em; color: var(--gold-hi);
-    font-variant-numeric: tabular-nums slashed-zero; text-shadow: 0 0 40px var(--gold-glow); }
-  #symprice .px.up { color: var(--up); text-shadow: 0 0 40px var(--up-glow); }
-  #symprice .px.dn { color: var(--dn); text-shadow: 0 0 40px var(--dn-glow); }
-  #symprice .chg { font-size: 13.5px; font-weight: 600; }
+  .papertag { font: 600 9px var(--mono); letter-spacing: .18em; text-transform: uppercase;
+    color: var(--amber); border: 1px solid rgba(255,176,0,.3); background: rgba(255,176,0,.1);
+    border-radius: 0; padding: 3px 8px; margin-left: 10px; vertical-align: 1px; }
+  /* numbers-as-hero: lime ticker in a hard-offset-shadow brutalist tile */
+  #symprice { display: flex; align-items: baseline; gap: 12px; margin-left: auto;
+    border: 2px solid var(--line2); box-shadow: 6px 6px 0 var(--gold); background: var(--bg1);
+    padding: 5px 16px; }
+  #symprice .px { font: 700 clamp(32px,4.4vw,50px)/1 var(--mono); letter-spacing: -.035em;
+    color: var(--gold); font-variant-numeric: tabular-nums slashed-zero; }
+  #symprice .px.up, #symprice .px.dn { color: var(--gold); }
+  #symprice .chg { font-size: 13.5px; font-weight: 700; font-family: var(--mono); }
+  .caret { color: var(--gold); font: 700 clamp(32px,4.4vw,50px)/1 var(--mono);
+    animation: blink 1.05s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
   .tb-stat { font-size: 11.5px; color: var(--ink2); }
   .tb-stat b { color: var(--ink); font-weight: 600; }
   #status { font: 600 11px var(--mono); letter-spacing: .04em; color: var(--ink2);
@@ -125,13 +137,13 @@
   @media (max-width: 1020px) { #layout { grid-template-columns: 1fr; } }
   main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
   aside { position: sticky; top: 86px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
-  #watchlist { overflow: hidden; border-radius: 14px; box-shadow: var(--lit);
+  #watchlist { overflow: hidden; border-radius: 8px; box-shadow: var(--lit);
     background: linear-gradient(var(--bg2),var(--bg1)); border: 1px solid var(--line); }
 
-  .panel { position: relative; border-radius: 14px; overflow: hidden;
+  .panel { position: relative; border-radius: 8px; overflow: hidden;
     background: linear-gradient(var(--bg2),var(--bg1)); border: 1px solid var(--line); box-shadow: var(--lit); }
-  .panel::before { content: ""; position: absolute; inset: 0; border-radius: 14px; padding: 1px;
-    background: linear-gradient(160deg, rgba(245,166,35,.22), transparent 42%);
+  .panel::before { content: ""; position: absolute; inset: 0; border-radius: 8px; padding: 1px;
+    background: linear-gradient(160deg, rgba(204,255,0,.22), transparent 42%);
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; opacity: .7; }
 
@@ -155,7 +167,7 @@
   #stats { display: grid; gap: 1px;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     background: var(--line); border: 1px solid var(--line);
-    border-radius: 14px; overflow: hidden; box-shadow: var(--lit); }
+    border-radius: 8px; overflow: hidden; box-shadow: var(--lit); }
   .stat { background: var(--bg1); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;
     transition: background .2s var(--ease); }
   .stat:hover { background: var(--bg2); }
@@ -188,6 +200,11 @@
              background: linear-gradient(90deg,var(--gold),var(--gold-hi)); box-shadow: 0 0 10px -2px var(--gold-glow); }
   .roi-fill.up { background: linear-gradient(90deg,#2f9d75,var(--up)); }
   .roi-fill.dn { background: linear-gradient(90deg,#b8362f,var(--dn)); }
+  /* ROI-by-strategy as a LOLLIPOP / dot plot (a different chart, anti-slop) */
+  #roibody .roi-track { height: 3px; background: var(--line); overflow: visible; box-shadow: none; }
+  #roibody .roi-fill { position: relative; height: 3px; box-shadow: none; border-radius: 0; }
+  #roibody .roi-fill::after { content: ""; position: absolute; right: -4px; top: 50%; width: 9px; height: 9px;
+    border-radius: 50%; transform: translateY(-50%); background: inherit; }
   .roi-pct { font-family: var(--mono); font-size: 12.5px; font-weight: 600; text-align: right;
              font-variant-numeric: tabular-nums; }
   .roi-pct.up { color: var(--up); } .roi-pct.dn { color: var(--dn); }
@@ -204,7 +221,7 @@
   .tab .n { font-family: var(--mono); font-size: 10px; color: var(--ink3); background: var(--bg3);
     padding: 1px 6px; border-radius: 20px; font-variant-numeric: tabular-nums; }
   .tab .n:empty { display: none; }
-  .tab.on .n { color: var(--gold-hi); background: rgba(245,166,35,.18); }
+  .tab.on .n { color: var(--gold-hi); background: rgba(204,255,0,.18); }
   #filtchip { margin-left: auto; font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase;
     color: var(--gold); border: 1px dashed var(--gold-dim); border-radius: 7px; padding: 5px 10px;
     cursor: pointer; white-space: nowrap; }
@@ -325,8 +342,9 @@
 <canvas id="ripplefx" aria-hidden="true"></canvas>
 
 <div id="topbar">
-  <div class="logo">Quant Desk <span class="papertag">PAPER — SIMULATED FUNDS</span></div>
-  <div id="symprice"><span class="px num" id="total">—</span><span class="chg num" id="chg"></span></div>
+  <span class="termdots"></span>
+  <div class="logo">status <span class="papertag">PAPER — SIMULATED FUNDS</span></div>
+  <div id="symprice"><span class="px num" id="total">—</span><span class="chg num" id="chg"></span><span class="caret">█</span></div>
   <span class="tb-stat num">H <b id="dayhi">—</b></span>
   <span class="tb-stat num">L <b id="daylo">—</b></span>
   <span class="tb-stat">Polymarket · simulated $</span>
@@ -352,13 +370,13 @@
       </div>
     </div>
     <div class="lgrow">
-      <span class="lg" title="Total account value, minute by minute. Green fill above your $10,000 starting line, red fill below it."><s style="background:linear-gradient(180deg,#3ecf8e,#f6685e)"></s><b>Account value</b></span>
+      <span class="lg" title="Total account value, minute by minute. Green fill above your $10,000 starting line, red fill below it."><s style="background:linear-gradient(180deg,#00d395,#ff5c5c)"></s><b>Account value</b></span>
       <span class="lg" title="Your $10,000 starting balance — the line that separates profit from loss."><i class="dot" style="border-color:#8b8b95"></i><b>Start line</b></span>
-      <span class="lg" title="Arbitrage sub-account: locked-payout positions (neg-risk and threshold pairs). Never sold early."><i style="border-color:#e8a33d"></i>Arbitrage</span>
-      <span class="lg" title="Heavy favorites sub-account: the backtest-validated 96–98.9¢ strategy, Kelly-sized."><i style="border-color:#38bdf8"></i>Favorites</span>
-      <span class="lg" title="News-reaction sub-account: fades big moves on slow markets. Currently quarantined behind gates after early losses."><i style="border-color:#b08cff"></i>News</span>
-      <span class="lg" title="Explorer sub-account: $1 learning bets that buy resolution labels across untested price bands."><i style="border-color:#3ecf8e"></i>Explorer</span>
-      <span class="lg" title="Day-trading desk: fades chart-confirmed overreactions intraday with tight brackets, never holds to resolution."><i style="border-color:#f6685e"></i>Day trading</span>
+      <span class="lg" title="Arbitrage sub-account: locked-payout positions (neg-risk and threshold pairs). Never sold early."><i style="border-color:#ccff00"></i>Arbitrage</span>
+      <span class="lg" title="Heavy favorites sub-account: the backtest-validated 96–98.9¢ strategy, Kelly-sized."><i style="border-color:#5bc8ff"></i>Favorites</span>
+      <span class="lg" title="News-reaction sub-account: fades big moves on slow markets. Currently quarantined behind gates after early losses."><i style="border-color:#ff7ab6"></i>News</span>
+      <span class="lg" title="Explorer sub-account: $1 learning bets that buy resolution labels across untested price bands."><i style="border-color:#00d395"></i>Explorer</span>
+      <span class="lg" title="Day-trading desk: fades chart-confirmed overreactions intraday with tight brackets, never holds to resolution."><i style="border-color:#ff5c5c"></i>Day trading</span>
     </div>
     <div id="chart"></div>
   </div>
@@ -369,11 +387,11 @@
       
     </div>
     <div class="lgrow">
-      <span class="lg" title="Running total of realized profit/loss across every settled trade. The money answer."><i style="border-color:#e8a33d"></i><b>Cumulative P&L</b></span>
-      <span class="lg" title="Average P&L of the last 20 settled trades. The learning answer: climbing toward and holding above $0 means the bot is improving."><i class="dash" style="border-color:#3ecf8e"></i><b>Rolling avg (20 trades)</b></span>
-      <span class="lg" title="Zero — the line the rolling average must cross for the bot to be profitable trade-over-trade."><i class="dot" style="border-color:#f6685e"></i>Breakeven</span>
-      <span class="lg" title="Skill-o-meter: t-statistic of the last ~40 minutes of equity movement. Above +2 the rise is statistically REAL (skill); below −2 the drop is real; between the bands it's indistinguishable from luck."><i style="border-color:#b08cff"></i><b>Skill-o-meter</b></span>
-      <span class="lg" title="±2 significance bands: outside = real, inside = luck/noise."><i class="dot" style="border-color:#3ecf8e"></i>±2 luck bands</span>
+      <span class="lg" title="Running total of realized profit/loss across every settled trade. The money answer."><i style="border-color:#ccff00"></i><b>Cumulative P&L</b></span>
+      <span class="lg" title="Average P&L of the last 20 settled trades. The learning answer: climbing toward and holding above $0 means the bot is improving."><i class="dash" style="border-color:#00d395"></i><b>Rolling avg (20 trades)</b></span>
+      <span class="lg" title="Zero — the line the rolling average must cross for the bot to be profitable trade-over-trade."><i class="dot" style="border-color:#ff5c5c"></i>Breakeven</span>
+      <span class="lg" title="Skill-o-meter: t-statistic of the last ~40 minutes of equity movement. Above +2 the rise is statistically REAL (skill); below −2 the drop is real; between the bands it's indistinguishable from luck."><i style="border-color:#ff7ab6"></i><b>Skill-o-meter</b></span>
+      <span class="lg" title="±2 significance bands: outside = real, inside = luck/noise."><i class="dot" style="border-color:#00d395"></i>±2 luck bands</span>
     </div>
     <div id="curve" style="width:100%;height:170px"></div>
   </div>
@@ -384,8 +402,8 @@
       
     </div>
     <div class="lgrow">
-      <span class="lg" title="The brain's out-of-sample skill: how much better than a coin-flip baseline it predicts trade outcomes on data it never trained on. Climbing = the machine is learning."><i style="border-color:#3ecf8e"></i><b>Brain skill</b></span>
-      <span class="lg" title="Model 15 vs the market itself: whether the ML out-forecasts the crowd's own prices. Above the baseline = beating the market — genuine alpha."><i style="border-color:#b08cff"></i><b>ML vs market</b></span>
+      <span class="lg" title="The brain's out-of-sample skill: how much better than a coin-flip baseline it predicts trade outcomes on data it never trained on. Climbing = the machine is learning."><i style="border-color:#00d395"></i><b>Brain skill</b></span>
+      <span class="lg" title="Model 15 vs the market itself: whether the ML out-forecasts the crowd's own prices. Above the baseline = beating the market — genuine alpha."><i style="border-color:#ff7ab6"></i><b>ML vs market</b></span>
       <span class="lg" title="Zero skill — above this line the model genuinely knows something."><i class="dot" style="border-color:#8b8b95"></i>Baseline</span>
     </div>
     <div id="smart" style="width:100%;height:140px"></div>
@@ -480,8 +498,8 @@ function renderSmart() {
     // brain skill (~0..0.3) and ML-vs-market edge (~±0.01) live on DIFFERENT
     // scales — sharing one axis crushed "vs market" into a dead flat line at 0.
     // Each gets its own axis so both show their real movement.
-    brainSk = smartChart.addLineSeries({ color: "#3ecf8e", lineWidth: 2, title: "brain", priceScaleId: "right" });
-    m15Sk = smartChart.addLineSeries({ color: "#b08cff", lineWidth: 2, title: "vs market", priceScaleId: "left" });
+    brainSk = smartChart.addLineSeries({ color: "#00d395", lineWidth: 2, title: "brain", priceScaleId: "right" });
+    m15Sk = smartChart.addLineSeries({ color: "#ff7ab6", lineWidth: 2, title: "vs market", priceScaleId: "left" });
     brainSk.createPriceLine({ price: 0, color: "#8b8b95", lineWidth: 1,
       lineStyle: 3, title: "baseline" });
     m15Sk.createPriceLine({ price: 0, color: "#8b8b95", lineWidth: 1,
@@ -542,21 +560,21 @@ function renderCurve() {
       leftPriceScale: { visible: true, borderColor: "#2c2c33" },
       timeScale: { borderColor: "#2c2c33", timeVisible: true, secondsVisible: false, tickMarkFormatter: LT, minBarSpacing: 0.001, rightOffset: 4, shiftVisibleRangeOnNewBar: false },
     });
-    cumSeries = curveChart.addLineSeries({ color: "#e8a33d", lineWidth: 2,
+    cumSeries = curveChart.addLineSeries({ color: "#ccff00", lineWidth: 2,
       priceScaleId: "right", lastValueVisible: true });
-    rollSeries = curveChart.addLineSeries({ color: "#3ecf8e", lineWidth: 2,
+    rollSeries = curveChart.addLineSeries({ color: "#00d395", lineWidth: 2,
       lineStyle: 2, priceScaleId: "left", lastValueVisible: true });
-    rollSeries.createPriceLine({ price: 0, color: "#f6685e", lineWidth: 1,
+    rollSeries.createPriceLine({ price: 0, color: "#ff5c5c", lineWidth: 1,
       lineStyle: 3, title: "breakeven" });
-    sharpeSeries = curveChart.addLineSeries({ color: "#b08cff", lineWidth: 1,
+    sharpeSeries = curveChart.addLineSeries({ color: "#ff7ab6", lineWidth: 1,
       lineStyle: 0, priceScaleId: "sharpe", lastValueVisible: true,
       title: "skill" });
     sharpeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.55, bottom: 0.02 } });
-    sharpeSeries.createPriceLine({ price: 2, color: "#3ecf8e", lineWidth: 1,
+    sharpeSeries.createPriceLine({ price: 2, color: "#00d395", lineWidth: 1,
       lineStyle: 3, title: "real skill" });
     sharpeSeries.createPriceLine({ price: 0, color: "#8b8b95", lineWidth: 1,
       lineStyle: 3, title: "" });
-    sharpeSeries.createPriceLine({ price: -2, color: "#f6685e", lineWidth: 1,
+    sharpeSeries.createPriceLine({ price: -2, color: "#ff5c5c", lineWidth: 1,
       lineStyle: 3, title: "real loss" });
   }
   const c = S.pnl_curve;
@@ -609,16 +627,16 @@ function initChart() {
   });
   eqSeries = chart.addBaselineSeries({
     baseValue: { type: "price", price: 10000 },
-    topLineColor: "#3ecf8e", topFillColor1: "rgba(58,210,159,.16)",
+    topLineColor: "#00d395", topFillColor1: "rgba(58,210,159,.16)",
     topFillColor2: "rgba(58,210,159,0)",
-    bottomLineColor: "#f6685e", bottomFillColor1: "rgba(255,95,109,0)",
+    bottomLineColor: "#ff5c5c", bottomFillColor1: "rgba(255,95,109,0)",
     bottomFillColor2: "rgba(255,95,109,.16)",
     lineWidth: 2, priceLineVisible: true, lastValueVisible: true,
   });
   eqSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.42 } });
   stratSeries = {};
   for (const [k, color] of Object.entries(
-      { arbitrage: "#e8a33d", high_prob: "#38bdf8", news: "#b08cff", explore: "#3ecf8e", daytrade: "#f6685e" })) {
+      { arbitrage: "#ccff00", high_prob: "#5bc8ff", news: "#ff7ab6", explore: "#00d395", daytrade: "#ff5c5c" })) {
     stratSeries[k] = chart.addLineSeries({
       color, lineWidth: 1, priceScaleId: "strat",
       priceLineVisible: false, lastValueVisible: false,
@@ -759,7 +777,7 @@ const spark = path => {
   const pts = vs.map((v, i) =>
     `${(i / (vs.length - 1) * 78 + 1).toFixed(1)},${(19 - (v - lo) / rng * 17).toFixed(1)}`).join(" ");
   const up = vs[vs.length - 1] >= vs[0];
-  return `<svg width="80" height="21" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="${up ? "#3ecf8e" : "#f6685e"}" stroke-width="1.4"/></svg>`;
+  return `<svg width="80" height="21" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="${up ? "#00d395" : "#ff5c5c"}" stroke-width="1.4"/></svg>`;
 };
 const POS_COLS = [
   { label: "Strategy", get: p => p.strategy, fmt: p => stratTag(p.strategy) },
@@ -917,14 +935,14 @@ function renderPromising() {
       const r = S / 2, g = c.createRadialGradient(r, r, 0, r, r, r);
       g.addColorStop(0, "rgba(0,0,0,0.66)");
       g.addColorStop(0.5, "rgba(8,6,4,0.34)");
-      g.addColorStop(0.78, "rgba(245,166,35,0.14)");
+      g.addColorStop(0.78, "rgba(204,255,0,0.14)");
       g.addColorStop(0.93, "rgba(255,214,130,0.50)");
       g.addColorStop(1, "rgba(0,0,0,0)");
       c.fillStyle = g; c.fillRect(0, 0, S, S);
     });
     const ring = sprite((c, S) => {                 // thin glowing wavefront
       const r = S / 2, g = c.createRadialGradient(r, r, r * 0.82, r, r, r);
-      g.addColorStop(0, "rgba(245,166,35,0)");
+      g.addColorStop(0, "rgba(204,255,0,0)");
       g.addColorStop(0.75, "rgba(255,205,110,0.55)");
       g.addColorStop(1, "rgba(255,240,200,0)");
       c.fillStyle = g; c.fillRect(0, 0, S, S);
