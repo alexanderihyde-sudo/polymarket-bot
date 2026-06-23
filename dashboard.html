@@ -165,7 +165,7 @@ function curveSVG(hist){
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" preserveAspectRatio="none">`+
     `<polygon points="${area}" fill="${FILL()}"/>`+
     `<polyline class="cline" points="${line}" fill="none" stroke="${INK()}" stroke-width="3.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`+
-    `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="#c8fa3c" stroke="#111" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+    `<circle cx="${Math.min(W-9,last[0]).toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="#c8fa3c" stroke="#111" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
 }
 function spark(vals){
   if(!vals||vals.length<2) return "";
@@ -227,8 +227,8 @@ function render(){
       `<svg viewBox="0 0 1000 26" width="100%" height="26" preserveAspectRatio="none">`+
       `<line x1="0" y1="17" x2="1000" y2="17" stroke="${INK()}" stroke-width="1" opacity=".18"/>`+
       `<line x1="0" y1="17" x2="${(v*1000).toFixed(0)}" y2="17" stroke="${INK()}" stroke-width="3"/>`+
-      `<line x1="${(t*1000).toFixed(0)}" y1="6" x2="${(t*1000).toFixed(0)}" y2="26" stroke="${INK()}" stroke-width="1.5"/>`+
-      `<circle cx="${(v*1000).toFixed(0)}" cy="17" r="4" fill="${INK()}"/></svg>`;
+      `<line x1="${(t*1000).toFixed(0)}" y1="1" x2="${(t*1000).toFixed(0)}" y2="25" stroke="#9fe016" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`+
+      `<circle cx="${(v*1000).toFixed(0)}" cy="17" r="4.5" fill="${INK()}" vector-effect="non-scaling-stroke"/></svg>`;
   } else $("gate").innerHTML = `<div class="ln">no crypto settles yet</div>`;
 
   const rec=(S.settled||[]).slice(0,7);
