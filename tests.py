@@ -753,6 +753,27 @@ def test_edge_gates():
        order[0] == "proven" and "promising" in order[:2])
 
 
+def test_strategy_lab():
+    # 100+ candidate (category x entry-band) strategies graded in SHADOW. A cell
+    # is 'promising' ONLY if it beats its priced baseline with confidence; a
+    # confident loser is 'rejected'; a tiny sample stays 'testing'. Pure
+    # measurement — promotes/sizes nothing.
+    settled = ([{"category":"Sports","pnl":0.30,"entry_price":0.72}]*90 +
+               [{"category":"Sports","pnl":-0.72,"entry_price":0.72}]*10 +
+               [{"category":"Crypto","pnl":-1.0,"entry_price":0.86}]*30 +
+               [{"category":"Politics","pnl":1.0,"entry_price":0.55}]*5)
+    lab = bot.strategy_lab({"settled": settled})
+    ok("lab/runs 100+ candidates", lab["total"] >= 100)
+    cells = {(x["cat"], x["band"]): x for x in lab["top"]}
+    ok("lab/calibration-beating cell is promising",
+       cells.get(("Sports","70-78c"),{}).get("status") == "promising")
+    ok("lab/confident loser cell is rejected",
+       cells.get(("Crypto","85-90c"),{}).get("status") == "rejected")
+    ok("lab/promising sort to the top + counts add up",
+       lab["top"][0]["status"] == "promising" and
+       lab["promising"]+lab["testing"]+lab["rejected"] == lab["total"])
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
@@ -761,7 +782,7 @@ ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_category_never_blocked, test_augmented_arb_guard,
        test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold,
        test_dedup_open_leg, test_arb_scanner_pagination, test_high_prob_scan_pages,
-       test_crypto_edge_gate, test_edge_gates)
+       test_crypto_edge_gate, test_edge_gates, test_strategy_lab)
 
 if __name__ == "__main__":
     t0 = time.time()

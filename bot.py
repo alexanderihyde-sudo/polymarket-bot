@@ -7592,6 +7592,53 @@ def edge_gates(account):
     return out
 
 
+LAB_CATEGORIES = ("Crypto", "Sports", "Esports", "Politics", "Economy", "Weather",
+                  "Pop Culture", "Science", "Business", "World", "Tech", "Mentions", "Other")
+LAB_BANDS = ((0.50, 0.60), (0.60, 0.70), (0.70, 0.78), (0.78, 0.85),
+             (0.85, 0.90), (0.90, 0.94), (0.94, 0.97), (0.97, 0.995))
+
+
+def strategy_lab(account):
+    """100+ candidate strategies under continuous SHADOW test (13 categories x 8
+    entry-price bands = 104 hypotheses). Each is graded ONLY on the bot's settled
+    history; a candidate is PROMISING solely if it beats its priced baseline with
+    confidence (Wilson-95 win-rate lower bound > the band's mean entry price) over
+    >=EDGE_MIN_N settles — NEVER on raw positive P&L (that is the documented way
+    people size up losers). Promotes/sizes NOTHING — pure measurement; the honest
+    expected result is that almost none beat calibration (only arb makes money).
+    Read-only; full settled history."""
+    settled = account.get("settled", []) if account else []
+    rows = []
+    for t in settled:
+        e = _settle_entry(t)
+        if e is None:
+            continue
+        rows.append((str(t.get("category") or "Other").lower(), e, float(t.get("pnl") or 0)))
+    out = []
+    for cat in LAB_CATEGORIES:
+        cl = cat.lower()
+        for lo, hi in LAB_BANDS:
+            cell = [(e, p) for (c, e, p) in rows if c == cl and lo <= e < hi]
+            n = len(cell)
+            wins = sum(1 for (_e, p) in cell if p > 0)
+            total = round(sum(p for (_e, p) in cell), 2)
+            base = (sum(e for (e, _p) in cell) / n) if n else (lo + hi) / 2
+            wl = _wilson_lower(wins, n)
+            status = "testing" if n < EDGE_MIN_N else ("promising" if wl > base else "rejected")
+            out.append({"cat": cat, "band": f"{int(round(lo*100))}-{int(round(hi*100))}c",
+                        "n": n, "win_pct": round(100.0 * wins / n, 1) if n else 0.0,
+                        "base": round(base, 3), "wilson_lower": round(wl, 3),
+                        "total_pnl": total, "status": status})
+    rank = {"promising": 0, "rejected": 1, "testing": 2}
+    out.sort(key=lambda x: (rank[x["status"]], -x["n"]))
+    return {"total": len(out),
+            "promising": sum(1 for x in out if x["status"] == "promising"),
+            "testing": sum(1 for x in out if x["status"] == "testing"),
+            "rejected": sum(1 for x in out if x["status"] == "rejected"),
+            "with_data": sum(1 for x in out if x["n"] > 0),
+            "top": out[:30]}
+
+
 def dashboard_state(account=None):
     """Everything the web page needs. When `account` is passed (snapshot_loop),
     build from that live IN-MEMORY snapshot — NO 47 MB disk reload; when None
@@ -7682,6 +7729,7 @@ def dashboard_state(account=None):
                           if SKILL_HIST_FILE.exists() else []),
         "crypto_edge": crypto_edge_gate(account),
         "edge_gates": edge_gates(account),
+        "strategy_lab": strategy_lab(account),
         "settles_24h": len(recent),
         "raw_n": len(nonarb),
         "effective_n": effective_n(nonarb),

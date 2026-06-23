@@ -35,7 +35,15 @@
 
   /* ── HERO ───────────────────────────────────────────────── */
   #hero{position:relative;overflow:hidden;padding:0 0 46px;border-bottom:1px solid var(--line);min-height:clamp(440px,62vh,720px)}
-  .heroimg{position:absolute;top:-24px;right:-26px;height:clamp(400px,64vh,760px);width:auto;z-index:2;pointer-events:none;user-select:none}
+  .heroimg{position:absolute;top:-24px;right:-26px;height:clamp(400px,64vh,760px);width:auto;z-index:2;pointer-events:none;user-select:none;animation:heroFloat 8.5s var(--ease) infinite;will-change:transform}
+  @keyframes heroFloat{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-16px) rotate(.55deg)}}
+  .labrow{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-bottom:1px solid var(--line)}
+  .labrow:last-child{border-bottom:none}
+  .band{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--ink3);text-transform:uppercase;margin-left:6px}
+  .ltag{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:3px 8px;border-radius:4px;border:1px solid var(--line2);color:var(--ink3);white-space:nowrap}
+  .ltag.promising{background:var(--ink);color:var(--cream);border-color:var(--ink)}
+  .ltag.rejected{color:var(--ink2)}
+  .ltag.testing{color:var(--ink3);border-style:dashed}
   body.dark .heroimg{display:none}
   @media (max-width:760px){.heroimg{opacity:.3;right:-70px}}
   #curveband{border-bottom:1px solid var(--line)}
@@ -115,6 +123,7 @@
 <section id="curveband"><div id="curve"></div></section>
 <main>
   <section class="stats" id="stats"></section>
+  <section class="block"><div class="sec">Strategies under test</div><div id="lab"></div></section>
   <section class="block"><div class="sec">Strategies</div><div id="strats"></div></section>
   <section class="block"><div class="sec">Open positions</div><div id="positions"></div></section>
   <section class="block"><div class="sec">Crypto edge</div><div class="gate" id="gate"></div></section>
@@ -226,13 +235,26 @@ function render(){
       `<span class="val num">${up?"▲ ":"▼ "}${signed(t.pnl||0)}</span></div>`;
   }).join("") || `<div class="meta">nothing settled yet</div>`;
 
-  renderPositions(); renderCalendar(); renderWaterfall();
+  renderPositions(); renderCalendar(); renderWaterfall(); renderLab();
   $("foot").innerHTML =
     `<span>Polybot · paper money · nothing real at risk</span>`+
     `<span>since reset · ${S.settled_total||0} settled</span>`+
     `<span>crypto gate ${ce.gate_met?"clear":"shut"} · ${ce.n||0}/${ce.target||400}</span>`;
 }
 function stat(k,v){ return `<div class="stat"><div class="lab">${k}</div><div class="v num">${v}</div></div>`; }
+function renderLab(){
+  const L=S.strategy_lab, el=$("lab"); if(!el||!L){ if(el) el.innerHTML=`<div class="meta">starting up…</div>`; return; }
+  const head=`<div class="ln" style="margin-bottom:18px"><b style="font-size:15px">${L.total}</b> candidate strategies under shadow test &nbsp;·&nbsp; `+
+    `<b>${L.promising}</b> promising · ${L.with_data} with data · ${L.rejected} rejected · ${L.testing} gathering</div>`;
+  const rows=(L.top||[]).slice(0,18).map(x=>{
+    const meta = x.n ? `${x.n} settles · ${x.win_pct}% vs ${Math.round(x.base*100)}¢ · ci-lo ${(x.wilson_lower*100).toFixed(0)}%` : "awaiting data";
+    return `<div class="labrow"><div><span class="name" style="font-size:13.5px;display:inline">${esc(x.cat)}</span><span class="band">${x.band}</span></div>`+
+      `<div class="rt"><span class="meta" style="text-transform:none;letter-spacing:.01em">${meta}</span>`+
+      `<span class="ltag ${x.status}">${x.status}</span></div></div>`;
+  }).join("");
+  el.innerHTML = head + `<div>${rows}</div>`+
+    `<div class="meta" style="margin-top:16px;text-transform:none;letter-spacing:.03em">shadow / paper · a candidate is sized only once it beats its priced baseline with confidence — none have</div>`;
+}
 function renderPositions(){
   const ps=(S.positions||[]);
   $("positions").innerHTML = ps.slice(0,12).map(p=>
