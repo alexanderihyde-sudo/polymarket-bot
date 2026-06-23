@@ -220,15 +220,16 @@ function render(){
   $("strats").innerHTML = st || `<div class="meta">no strategies yet</div>`;
 
   if(ce && ce.n){
-    const lo=0.5, hi=1, f=x=>Math.max(0,Math.min(1,(x-lo)/(hi-lo)));
-    const v=f(ce.wilson_lower), t=f(ce.mean_entry||0), met=ce.gate_met;
+    const S=0.06, f=x=>Math.max(0,Math.min(1,((x||0)+S)/(2*S)));   // edge [-6pp,+6pp] -> [0,1], zero at center
+    const em=(ce.edge_mean==null?0:ce.edge_mean), el=(ce.edge_lower==null?em:ce.edge_lower);
+    const v=f(el), met=ce.gate_met, pp=x=>((x>=0?"+":"")+(x*100).toFixed(1)+"pp");
     $("gate").innerHTML =
       `<div class="top"><span class="lab">Calibration gate — ${met?"clear":"shut"}</span>`+
-      `<span class="ln">win ${ce.win_pct}% · ci-lo ${(ce.wilson_lower*100).toFixed(1)}% vs ${Math.round((ce.mean_entry||0)*100)}¢ entry · ${ce.n}/${ce.target}</span></div>`+
+      `<span class="ln">edge ${pp(em)} · 95% lo ${pp(el)} vs 0 · ${ce.n}/${ce.target} · ${ce.win_pct}% @ ${Math.round((ce.mean_entry||0)*100)}¢</span></div>`+
       `<svg viewBox="0 0 1000 26" width="100%" height="26" preserveAspectRatio="none">`+
       `<line x1="0" y1="17" x2="1000" y2="17" stroke="${INK()}" stroke-width="1" opacity=".18"/>`+
-      `<line x1="0" y1="17" x2="${(v*1000).toFixed(0)}" y2="17" stroke="${INK()}" stroke-width="3"/>`+
-      `<line x1="${(t*1000).toFixed(0)}" y1="1" x2="${(t*1000).toFixed(0)}" y2="25" stroke="#9fe016" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`+
+      `<line x1="${Math.min(500,v*1000).toFixed(0)}" y1="17" x2="${Math.max(500,v*1000).toFixed(0)}" y2="17" stroke="${INK()}" stroke-width="3"/>`+
+      `<line x1="500" y1="1" x2="500" y2="25" stroke="#9fe016" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`+
       `<circle cx="${(v*1000).toFixed(0)}" cy="17" r="4.5" fill="${INK()}" vector-effect="non-scaling-stroke"/></svg>`;
   } else $("gate").innerHTML = `<div class="ln">no crypto settles yet</div>`;
 

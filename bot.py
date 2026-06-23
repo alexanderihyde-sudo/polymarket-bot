@@ -7472,6 +7472,7 @@ def _roi_table(settled, key):
 
 EDGE_VALIDATION_N = 400          # settles before a calibration edge is "validated"
 EDGE_MIN_N = 20                  # below this a sleeve is too small to call
+EDGE_MIN_EFFECT = 0.01           # min point edge (1pp) worth sizing — favorites carry left-tail risk; a hair-above-zero edge is not worth it
 
 
 def _settle_entry(t):
@@ -7503,13 +7504,38 @@ def _pnl_lower(pnls):
     return mu - 1.96 * (var / n) ** 0.5
 
 
+def _edge_ci(values):
+    """Mean realised edge and its 95% lower bound over per-trade edges
+    e_i = win_i - entry_i (entry = the priced probability). Uses the edge's OWN
+    empirical variance, so it is correctly specified for trades placed at DIFFERENT
+    prices: no pooling / Simpson bias, and the price-explained variance is removed
+    (so it is also less conservative than a single binomial Wilson on the pooled
+    win-rate). lower > 0 == confidently positive expected value vs what was priced."""
+    n = len(values)
+    if n == 0:
+        return {"n": 0, "mean": None, "lower": None, "se": None}
+    mu = sum(values) / n
+    if n < 2:
+        return {"n": n, "mean": mu, "lower": None, "se": None}
+    var = sum((x - mu) ** 2 for x in values) / (n - 1)
+    se = (var / n) ** 0.5
+    return {"n": n, "mean": mu, "lower": mu - 1.96 * se, "se": se}
+
+
 def crypto_edge_gate(account):
-    """How close the crypto sleeve is to its edge-VALIDATION gate, for the
-    dashboard bar. Crypto prediction markets are near-perfectly calibrated, so
-    winning AS PRICED is calibration, NOT alpha. The gate to ever size crypto up
-    is BOTH n>=400 settled AND the Wilson-95 lower bound on win-rate strictly
-    above the mean entry price (beating calibration, not matching it). Computed
-    over the FULL settled history (the payload ships only 25). Read-only."""
+    """How close the crypto sleeve is to its edge-VALIDATION gate, for the dashboard
+    bar. Crypto prediction markets are near-perfectly calibrated, so winning AS
+    PRICED is calibration, NOT alpha. The gate to ever size crypto up is ALL of:
+      (1) n >= EDGE_VALIDATION_N settled crypto trades;
+      (2) the 95% lower bound on the PER-TRADE realised edge e_i = win_i - entry_i is
+          strictly > 0 (confidently +EV vs the priced probability);
+      (3) the point edge clears a small economic floor (EDGE_MIN_EFFECT) -- a
+          hair-above-zero edge is not worth favorites' left-tail risk;
+      (4) the edge survives leave-one-band-out (one lucky price band cannot carry it).
+    The per-trade edge -- not pooled win% vs mean-entry under a single binomial
+    Wilson -- is the correctly-specified test: it pairs each outcome with its OWN
+    price (no aggregation / Simpson bias) and uses the edge's own variance.
+    Computed over the FULL settled history. Read-only; changes no sizing."""
     settled = account.get("settled", []) if account else []
     crypto = [t for t in settled
               if str(t.get("category") or "").lower() == "crypto"]
@@ -7517,19 +7543,51 @@ def crypto_edge_gate(account):
     wins = sum(1 for t in crypto if (t.get("pnl") or 0) > 0)
     ents = [e for e in (_settle_entry(t) for t in crypto) if e]
     mean_entry = sum(ents) / len(ents) if ents else None
-    wl = _wilson_lower(wins, n)
+    wl = _wilson_lower(wins, n)               # kept for the intuitive win-rate view
     total_pnl = round(sum((t.get("pnl") or 0) for t in crypto), 2)
+
+    # per-trade realised edge, tagged by price band
+    tagged = []
+    for t in crypto:
+        e = _settle_entry(t)
+        if e is None:
+            continue
+        w = 1.0 if (t.get("pnl") or 0) > 0 else 0.0
+        tagged.append((_band_label(e), w - e))
+    edge = _edge_ci([v for (_b, v) in tagged])
+    bands = []
+    for lo, hi in LAB_BANDS:
+        lab = "%d-%dc" % (round(lo * 100), round(hi * 100))
+        vals = [v for (b, v) in tagged if b == lab]
+        if vals:
+            ec = _edge_ci(vals)
+            bands.append({"band": lab, "n": ec["n"],
+                          "edge": round(ec["mean"], 4) if ec["mean"] is not None else None,
+                          "lower": round(ec["lower"], 4) if ec["lower"] is not None else None})
+    # leave-one-band-out: drop the single most-positive band; does the edge survive?
+    robust = None
+    if len(bands) >= 2 and edge["mean"] is not None:
+        best = max(bands, key=lambda b: (b["edge"] if b["edge"] is not None else -9.0))
+        kept = [v for (b, v) in tagged if b != best["band"]]
+        ek = _edge_ci(kept)
+        robust = bool(ek["mean"] is not None and ek["mean"] > 0)
+
     n_gate = n >= EDGE_VALIDATION_N
-    ci_gate = mean_entry is not None and wl > mean_entry
+    edge_gate = edge["lower"] is not None and edge["lower"] > 0
+    effect_gate = edge["mean"] is not None and edge["mean"] >= EDGE_MIN_EFFECT
+    gate_met = bool(n_gate and edge_gate and effect_gate and robust is not False)
     return {
         "n": n, "target": EDGE_VALIDATION_N, "wins": wins,
         "win_pct": round(100.0 * wins / n, 1) if n else 0.0,
         "mean_entry": round(mean_entry, 3) if mean_entry is not None else None,
         "wilson_lower": round(wl, 3),
+        "edge_mean": round(edge["mean"], 4) if edge["mean"] is not None else None,
+        "edge_lower": round(edge["lower"], 4) if edge["lower"] is not None else None,
+        "bands": bands, "robust": robust,
         "mean_pnl": round(total_pnl / n, 3) if n else 0.0,
         "total_pnl": total_pnl,
-        "n_gate": n_gate, "ci_gate": ci_gate,
-        "gate_met": bool(n_gate and ci_gate),
+        "n_gate": n_gate, "edge_gate": edge_gate, "effect_gate": effect_gate,
+        "gate_met": gate_met,
         "progress": round(min(1.0, n / EDGE_VALIDATION_N), 3),
     }
 
@@ -7596,6 +7654,13 @@ LAB_CATEGORIES = ("Crypto", "Sports", "Esports", "Politics", "Economy", "Weather
                   "Pop Culture", "Science", "Business", "World", "Tech", "Mentions", "Other")
 LAB_BANDS = ((0.50, 0.60), (0.60, 0.70), (0.70, 0.78), (0.78, 0.85),
              (0.85, 0.90), (0.90, 0.94), (0.94, 0.97), (0.97, 0.995))
+
+
+def _band_label(e):
+    for lo, hi in LAB_BANDS:
+        if lo <= e < hi:
+            return "%d-%dc" % (round(lo * 100), round(hi * 100))
+    return None
 
 
 def strategy_lab(account):

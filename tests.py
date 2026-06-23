@@ -708,10 +708,10 @@ def test_high_prob_scan_pages():
 
 
 def test_crypto_edge_gate():
-    # Crypto is calibration, not alpha: the gate to ever size up is n>=400 AND
-    # the Wilson-95 lower bound on win-rate strictly ABOVE the mean entry price
-    # (beating calibration, not matching it). A small sample winning exactly AS
-    # PRICED must keep the gate SHUT.
+    # Crypto is calibration, not alpha. The gate to ever size up is n>=400 AND the
+    # 95% lower bound on the PER-TRADE edge e=win-entry is > 0 (confidently +EV vs
+    # priced) AND a small economic floor AND robust to dropping any one price band.
+    # A book winning exactly AS PRICED -- at any size -- must keep the gate SHUT.
     settled = ([{"category": "Crypto", "pnl": 0.10, "entry_price": 0.90}] * 9
                + [{"category": "Crypto", "pnl": -0.90, "entry_price": 0.90}]
                + [{"category": "Politics", "pnl": 5.0, "entry_price": 0.50}] * 3)
@@ -719,15 +719,28 @@ def test_crypto_edge_gate():
     ok("crypto-gate/counts only crypto", g["n"] == 10 and g["wins"] == 9)
     ok("crypto-gate/win% computed", g["win_pct"] == 90.0)
     ok("crypto-gate/below n target", g["n_gate"] is False)
-    ok("crypto-gate/wilson-lower under entry at n=10 (as priced -> no edge)",
-       g["wilson_lower"] < g["mean_entry"] and g["ci_gate"] is False)
+    ok("crypto-gate/per-trade edge ~0 when winning as priced",
+       abs(g["edge_mean"]) < 1e-9)
+    ok("crypto-gate/edge-lower under 0 at n=10 (as priced -> no edge)",
+       g["edge_lower"] < 0 and g["edge_gate"] is False)
     ok("crypto-gate/shut on a small as-priced sample", g["gate_met"] is False)
-    # the gate OPENS only with a big sample beating calibration:
+    # A LARGE perfectly-calibrated book (win-rate == price) must ALSO stay shut --
+    # the calibration-not-alpha guarantee at scale (what the old pooled
+    # win%-vs-mean-entry test could be fooled by; the per-trade edge cannot).
+    cal = ([{"category": "Crypto", "pnl": 0.20, "entry_price": 0.80}] * 320
+           + [{"category": "Crypto", "pnl": -0.80, "entry_price": 0.80}] * 80)
+    gc = bot.crypto_edge_gate({"settled": cal})
+    ok("crypto-gate/calibrated big sample has ~0 edge", abs(gc["edge_mean"]) < 1e-9)
+    ok("crypto-gate/calibrated big sample stays SHUT",
+       gc["n"] == 400 and gc["n_gate"] is True and gc["gate_met"] is False)
+    # The gate OPENS only on a big sample with a CONFIDENT, economically real edge
+    # (~+10pp at 80c here) whose 95% lower bound clears 0.
     big = ([{"category": "Crypto", "pnl": 0.20, "entry_price": 0.80}] * 360
            + [{"category": "Crypto", "pnl": -0.80, "entry_price": 0.80}] * 40)
     gb = bot.crypto_edge_gate({"settled": big})
-    ok("crypto-gate/opens at n>=400 with CI-lower above entry",
-       gb["n"] == 400 and gb["n_gate"] and gb["ci_gate"] and gb["gate_met"])
+    ok("crypto-gate/opens at n>=400 with edge-lower above 0",
+       gb["n"] == 400 and gb["n_gate"] and gb["edge_gate"]
+       and gb["edge_lower"] > 0 and gb["gate_met"] is True)
 
 
 def test_edge_gates():
