@@ -35,9 +35,9 @@
 
   /* ── HERO ───────────────────────────────────────────────── */
   #hero{position:relative;overflow:hidden;isolation:isolate;padding:0 0 40px;border-bottom:1px solid var(--line);min-height:clamp(470px,66vh,770px)}
-  .herowrap{position:absolute;top:50%;left:58%;transform:translate(-50%,-50%);height:clamp(560px,120vh,1340px);z-index:-1;pointer-events:auto;backface-visibility:hidden}
-  .heroimg{display:block;height:100%;width:auto;user-select:none;-webkit-user-drag:none;filter:drop-shadow(0 30px 46px rgba(0,0,0,.10))}
-  body.dark .heroimg{filter:drop-shadow(0 26px 36px rgba(0,0,0,.55))}
+  .herowrap{position:absolute;top:50%;left:55%;transform:translate(-50%,-50%);height:clamp(540px,112vh,1280px);z-index:-1;pointer-events:auto;backface-visibility:hidden}
+  .heroimg{display:block;height:100%;width:auto;user-select:none;-webkit-user-drag:none;filter:sepia(.34) saturate(1.3) hue-rotate(-6deg) brightness(1.05) drop-shadow(0 30px 46px rgba(0,0,0,.10))}
+  body.dark .heroimg{filter:sepia(.34) saturate(1.22) hue-rotate(-6deg) brightness(.98) drop-shadow(0 26px 36px rgba(0,0,0,.55))}
   .camoclip{position:absolute;inset:0;pointer-events:none;-webkit-mask-image:var(--chrome);mask-image:var(--chrome);-webkit-mask-size:100% 100%;-webkit-mask-repeat:no-repeat;-webkit-mask-position:center;mask-size:100% 100%;mask-repeat:no-repeat;mask-position:center}
   .camoreveal{position:absolute;inset:0;opacity:0;transition:opacity .3s var(--ease);mix-blend-mode:overlay;background:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27240%27%20height%3D%27240%27%20viewBox%3D%270%200%20240%20240%27%3E%3Cdefs%3E%3Cfilter%20id%3D%27p%27%3E%3CfeTurbulence%20type%3D%27fractalNoise%27%20baseFrequency%3D%270.011%27%20numOctaves%3D%273%27%20seed%3D%276%27%20stitchTiles%3D%27stitch%27%20result%3D%27n%27%2F%3E%3CfeComponentTransfer%20in%3D%27n%27%20result%3D%27m%27%3E%3CfeFuncA%20type%3D%27discrete%27%20tableValues%3D%270%200%200%201%201%200%200%27%2F%3E%3C%2FfeComponentTransfer%3E%3CfeComposite%20in%3D%27SourceGraphic%27%20in2%3D%27m%27%20operator%3D%27in%27%2F%3E%3C%2Ffilter%3E%3Cfilter%20id%3D%27q%27%3E%3CfeTurbulence%20type%3D%27fractalNoise%27%20baseFrequency%3D%270.015%27%20numOctaves%3D%273%27%20seed%3D%2719%27%20stitchTiles%3D%27stitch%27%20result%3D%27n%27%2F%3E%3CfeComponentTransfer%20in%3D%27n%27%20result%3D%27m%27%3E%3CfeFuncA%20type%3D%27discrete%27%20tableValues%3D%270%200%201%201%200%200%200%27%2F%3E%3C%2FfeComponentTransfer%3E%3CfeComposite%20in%3D%27SourceGraphic%27%20in2%3D%27m%27%20operator%3D%27in%27%2F%3E%3C%2Ffilter%3E%3C%2Fdefs%3E%3Crect%20width%3D%27240%27%20height%3D%27240%27%20fill%3D%27%23c8fa3c%27%2F%3E%3Crect%20width%3D%27240%27%20height%3D%27240%27%20fill%3D%27%231a1a14%27%20filter%3D%27url%28%23p%29%27%2F%3E%3Crect%20width%3D%27240%27%20height%3D%27240%27%20fill%3D%27%236f7d2e%27%20filter%3D%27url%28%23q%29%27%2F%3E%3C%2Fsvg%3E") center/260px;-webkit-mask:radial-gradient(circle 240px at var(--mx,50%) var(--my,50%),#000 28%,transparent 72%) center/100% 100% no-repeat;mask:radial-gradient(circle 240px at var(--mx,50%) var(--my,50%),#000 28%,transparent 72%) center/100% 100% no-repeat}
   /* camo revealed via JS pointer tracking on the hero (smooth, no toggle) */
@@ -306,7 +306,24 @@ if(DARK) document.body.classList.add("dark");
 $("menu").addEventListener("click",()=>{ DARK=!DARK; document.body.classList.toggle("dark",DARK);
   localStorage.setItem("theme",DARK?"dark":"light"); if(S) render(); });
 const _hw=$("herowrap"),_cr=$("camoreveal"),_he=_hw&&_hw.parentElement;
-if(_hw&&_cr&&_he){_he.addEventListener("mousemove",function(e){var r=_hw.getBoundingClientRect();_cr.style.setProperty("--mx",(e.clientX-r.left).toFixed(0)+"px");_cr.style.setProperty("--my",(e.clientY-r.top).toFixed(0)+"px");_cr.style.opacity="1";});_he.addEventListener("mouseleave",function(){_cr.style.opacity="0";});}
+if(_hw&&_cr&&_he){
+  var N=5, pts=[], tx=0, ty=0, active=false, raf=0, started=false;
+  for(var i=0;i<N;i++) pts.push({x:0,y:0});
+  function frame(){
+    pts[0].x+=(tx-pts[0].x)*0.4; pts[0].y+=(ty-pts[0].y)*0.4;
+    for(var i=1;i<N;i++){ pts[i].x+=(pts[i-1].x-pts[i].x)*0.4; pts[i].y+=(pts[i-1].y-pts[i].y)*0.4; }
+    var g=[];
+    for(var i=0;i<N;i++){ var f=i/(N-1), sz=Math.round(230-150*f), a=(1-f*0.8).toFixed(2);
+      g.push("radial-gradient(circle "+sz+"px at "+pts[i].x.toFixed(0)+"px "+pts[i].y.toFixed(0)+"px,rgba(0,0,0,"+a+") 0%,rgba(0,0,0,"+a+") 14%,transparent 62%)"); }
+    var s=g.join(","); _cr.style.webkitMaskImage=s; _cr.style.maskImage=s;
+    var dx=Math.abs(pts[N-1].x-tx), dy=Math.abs(pts[N-1].y-ty);
+    if(active||dx>0.4||dy>0.4){ raf=requestAnimationFrame(frame); } else { raf=0; }
+  }
+  _he.addEventListener("mousemove",function(e){ var r=_hw.getBoundingClientRect(); tx=e.clientX-r.left; ty=e.clientY-r.top;
+    if(!started){ started=true; for(var i=0;i<N;i++){pts[i].x=tx;pts[i].y=ty;} }
+    active=true; _cr.style.opacity="1"; if(!raf) raf=requestAnimationFrame(frame); });
+  _he.addEventListener("mouseleave",function(){ active=false; _cr.style.opacity="0"; });
+}
 load(); setInterval(load, 4000);
 </script>
 </body>
