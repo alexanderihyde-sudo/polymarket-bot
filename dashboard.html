@@ -15,7 +15,15 @@
     --lime:#c8fa3c; --lime-d:#9fe016;
     --disp:'Archivo',-apple-system,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace; --serif:'Instrument Serif',serif;
     --ease:cubic-bezier(.22,1,.36,1);
+    --curvefill:rgba(0,0,0,.05); --ghost:rgba(0,0,0,.07); --passbg:rgba(250,249,245,.92);
   }
+  body.dark{
+    --cream:#0a0a0b; --paper:#141416; --paper2:#1a1a1c;
+    --ink:#f4f3ee; --ink2:#a8a8a2; --ink3:#6e6e68;
+    --line:rgba(255,255,255,.1); --line2:rgba(255,255,255,.2);
+    --curvefill:rgba(255,255,255,.07); --ghost:rgba(255,255,255,.06); --passbg:rgba(18,18,20,.92);
+  }
+  body.dark .pill i{background:#0d1500}
   *{box-sizing:border-box;margin:0}
   html{background:var(--cream)}
   body{background:var(--cream);color:var(--ink);font-family:var(--disp);-webkit-font-smoothing:antialiased;
@@ -29,7 +37,7 @@
   #hero{position:relative;overflow:hidden;padding:0 0 40px;border-bottom:1px solid var(--line)}
   .contours{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
   .ghost{position:absolute;top:18%;left:-2vw;font-weight:900;font-size:34vw;line-height:.74;
-    color:transparent;-webkit-text-stroke:1.5px rgba(0,0,0,.07);white-space:nowrap;pointer-events:none;user-select:none}
+    color:transparent;-webkit-text-stroke:1.5px var(--ghost);white-space:nowrap;pointer-events:none;user-select:none}
   .bar{position:relative;display:flex;align-items:flex-start;justify-content:space-between;padding:26px 40px 0}
   .wordmark{font-weight:900;font-size:clamp(22px,2.4vw,30px);line-height:.82;letter-spacing:-.02em}
   .nav{display:flex;align-items:center;gap:12px}
@@ -43,12 +51,12 @@
   .metaline{position:relative;display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;padding:34px 40px 0}
   .metaline .chg{font-weight:800;font-size:clamp(15px,1.5vw,19px)}
   .metaline .chgpct{font-weight:700;font-size:clamp(15px,1.5vw,19px);color:var(--ink3)}
-  #equity{position:relative;font-weight:900;font-size:clamp(72px,17.5vw,320px);line-height:.82;
+  #equity{position:relative;font-weight:900;font-size:clamp(80px,19vw,420px);line-height:.82;
     letter-spacing:-.055em;white-space:nowrap;padding:6px 0 0 38px;font-variant-numeric:tabular-nums}
   #curve{position:relative;width:100%;height:clamp(180px,26vh,330px);margin-top:-1%}
   #curve svg{display:block}
   .pass{position:absolute;left:40px;bottom:26px;width:248px;border:1px solid var(--line2);border-radius:13px;
-    padding:15px 17px;background:rgba(250,249,245,.9);backdrop-filter:blur(3px)}
+    padding:15px 17px;background:var(--passbg);backdrop-filter:blur(3px)}
   .pass .top{display:flex;justify-content:space-between;align-items:baseline}
   .pass .big{font-weight:900;font-size:30px;letter-spacing:-.03em}
   .pass .foot{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:10px;margin-top:11px}
@@ -78,7 +86,7 @@
 </head>
 <body>
 <header id="hero">
-  <svg class="contours" viewBox="0 0 1440 720" preserveAspectRatio="none" aria-hidden="true"><g fill="none" stroke="#000" stroke-width="1" opacity=".045">
+  <svg class="contours" viewBox="0 0 1440 720" preserveAspectRatio="none" aria-hidden="true"><g fill="none" style="stroke:var(--ink)" stroke-width="1" opacity=".05">
     <path d="M-40,200 C320,90 480,420 920,300 C1180,230 1340,400 1520,330"/>
     <path d="M-40,330 C300,210 520,520 980,400 C1220,330 1380,470 1520,420"/>
     <path d="M-40,560 C260,460 560,640 1000,520 C1260,450 1400,560 1520,520"/>
@@ -103,7 +111,10 @@
 <main>
   <section class="stats" id="stats"></section>
   <section class="block"><div class="sec">Strategies</div><div id="strats"></div></section>
+  <section class="block"><div class="sec">Open positions</div><div id="positions"></div></section>
   <section class="block"><div class="sec">Crypto edge</div><div class="gate" id="gate"></div></section>
+  <section class="block"><div class="sec">Daily</div><div id="cal"></div></section>
+  <section class="block"><div class="sec">P&amp;L ledger</div><div id="water"></div></section>
   <section class="block"><div class="sec">Recent settles</div><div id="recent"></div></section>
 </main>
 <footer id="foot"></footer>
@@ -119,6 +130,8 @@ const pct = v => (v==null?"—":(v*100).toFixed(1)+"%");
 const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const NAMES = {arbitrage:"Arbitrage", high_prob:"Heavy favorites", news:"News reaction", explore:"Explorer", daytrade:"Day trading"};
 let S=null, prevTotal=null, drew=false;
+let DARK = localStorage.getItem("theme")==="dark";
+const INK=()=>DARK?"#f4f3ee":"#111", INK3=()=>DARK?"#6e6e68":"#8f8f86", FILL=()=>DARK?"rgba(255,255,255,.07)":"rgba(0,0,0,.05)";
 
 function curveSVG(hist){
   const vals = hist.map(p=>p.total).filter(v=>typeof v==="number");
@@ -132,8 +145,8 @@ function curveSVG(hist){
   const area=line+" "+W+","+H+" 0,"+H;
   const last=xy[xy.length-1];
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" preserveAspectRatio="none">`+
-    `<polygon points="${area}" fill="rgba(0,0,0,.05)"/>`+
-    `<polyline class="cline" points="${line}" fill="none" stroke="#111" stroke-width="3.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`+
+    `<polygon points="${area}" fill="${FILL()}"/>`+
+    `<polyline class="cline" points="${line}" fill="none" stroke="${INK()}" stroke-width="3.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`+
     `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="#c8fa3c" stroke="#111" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
 }
 function spark(vals){
@@ -142,14 +155,14 @@ function spark(vals){
   const p=vals.filter((_,i)=>i%step===0).slice(-N);
   const min=Math.min(...p),max=Math.max(...p),span=(max-min)||1, w=86,h=26;
   const pts=p.map((v,i)=>`${(i/(p.length-1)*w).toFixed(1)},${(h-1-((v-min)/span)*(h-2)).toFixed(1)}`).join(" ");
-  const col=p[p.length-1]>=p[0]?"#111":"#8f8f86";
+  const col=p[p.length-1]>=p[0]?INK():INK3();
   return `<svg width="${w}" height="${h}"><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5"/></svg>`;
 }
 function countTo(el,to){
-  const from = prevTotal==null?to:prevTotal;
-  if(Math.abs(to-from)<0.01){ el.textContent=usd(to); return; }
-  const t0=performance.now();
-  (function step(t){ const k=Math.min(1,(t-t0)/650), e=1-Math.pow(1-k,3);
+  const first = prevTotal==null, from = first?0:prevTotal;
+  if(!first && Math.abs(to-from)<0.01){ el.textContent=usd(to); return; }
+  const dur=first?1200:650, t0=performance.now();
+  (function step(t){ const k=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-k,3);
     el.textContent=usd(from+(to-from)*e); if(k<1) requestAnimationFrame(step); })(t0);
 }
 
@@ -194,10 +207,10 @@ function render(){
       `<div class="top"><span class="lab">Calibration gate — ${met?"clear":"shut"}</span>`+
       `<span class="ln">win ${ce.win_pct}% · ci-lo ${(ce.wilson_lower*100).toFixed(1)}% vs ${Math.round((ce.mean_entry||0)*100)}¢ entry · ${ce.n}/${ce.target}</span></div>`+
       `<svg viewBox="0 0 1000 26" width="100%" height="26" preserveAspectRatio="none">`+
-      `<line x1="0" y1="17" x2="1000" y2="17" stroke="rgba(0,0,0,.14)" stroke-width="1"/>`+
-      `<line x1="0" y1="17" x2="${(v*1000).toFixed(0)}" y2="17" stroke="#111" stroke-width="3"/>`+
-      `<line x1="${(t*1000).toFixed(0)}" y1="6" x2="${(t*1000).toFixed(0)}" y2="26" stroke="#111" stroke-width="1.5"/>`+
-      `<circle cx="${(v*1000).toFixed(0)}" cy="17" r="4" fill="#111"/></svg>`;
+      `<line x1="0" y1="17" x2="1000" y2="17" stroke="${INK()}" stroke-width="1" opacity=".18"/>`+
+      `<line x1="0" y1="17" x2="${(v*1000).toFixed(0)}" y2="17" stroke="${INK()}" stroke-width="3"/>`+
+      `<line x1="${(t*1000).toFixed(0)}" y1="6" x2="${(t*1000).toFixed(0)}" y2="26" stroke="${INK()}" stroke-width="1.5"/>`+
+      `<circle cx="${(v*1000).toFixed(0)}" cy="17" r="4" fill="${INK()}"/></svg>`;
   } else $("gate").innerHTML = `<div class="ln">no crypto settles yet</div>`;
 
   const rec=(S.settled||[]).slice(0,7);
@@ -208,17 +221,58 @@ function render(){
       `<span class="val num">${up?"▲ ":"▼ "}${signed(t.pnl||0)}</span></div>`;
   }).join("") || `<div class="meta">nothing settled yet</div>`;
 
+  renderPositions(); renderCalendar(); renderWaterfall();
   $("foot").innerHTML =
     `<span>Polybot · paper money · nothing real at risk</span>`+
     `<span>since reset · ${S.settled_total||0} settled</span>`+
     `<span>crypto gate ${ce.gate_met?"clear":"shut"} · ${ce.n||0}/${ce.target||400}</span>`;
 }
 function stat(k,v){ return `<div class="stat"><div class="lab">${k}</div><div class="v num">${v}</div></div>`; }
+function renderPositions(){
+  const ps=(S.positions||[]);
+  $("positions").innerHTML = ps.slice(0,12).map(p=>
+    `<div class="row"><div><div class="name">${esc((p.name||"—").slice(0,48))}</div>`+
+    `<div class="meta">${esc(NAMES[p.strategy]||p.strategy||"")} · ${esc(p.category||"")}</div></div>`+
+    `<span class="val num">${usd(p.cost||0)}</span></div>`).join("") || `<div class="meta">no open positions</div>`;
+}
+function renderCalendar(){
+  const pc=(S.pnl_curve||[]); if(!pc.length){ $("cal").innerHTML=`<div class="meta">no daily history yet</div>`; return; }
+  const byDay={}; for(const p of pc){ if(!p.t) continue; byDay[String(p.t).slice(0,10)]=p.cum; }
+  const days=Object.keys(byDay).sort(); let prev=0; const daily=days.map(d=>{ const v=byDay[d]-prev; prev=byDay[d]; return {d,v}; });
+  let mag=0.01; daily.forEach(x=>{ mag=Math.max(mag,Math.abs(x.v)); });
+  const cols=Math.min(daily.length,46), shown=daily.slice(-cols), cell=18, gap=5, w=cols*(cell+gap), ink=INK();
+  let svg=`<svg viewBox="0 0 ${w} ${cell+2}" width="100%" height="${cell+2}" preserveAspectRatio="xMinYMid meet">`;
+  shown.forEach((x,i)=>{ const xx=i*(cell+gap);
+    if(x.v>=0) svg+=`<rect x="${xx}" y="1" width="${cell}" height="${cell}" rx="2" fill="${ink}" opacity="${(0.15+0.78*Math.min(1,Math.abs(x.v)/mag)).toFixed(2)}"><title>${x.d} ${signed(x.v)}</title></rect>`;
+    else svg+=`<rect x="${xx+0.5}" y="1.5" width="${cell-1}" height="${cell-1}" rx="2" fill="none" stroke="${ink}" stroke-width="1.1" opacity="${(0.3+0.55*Math.min(1,Math.abs(x.v)/mag)).toFixed(2)}"><title>${x.d} ${signed(x.v)}</title></rect>`;
+  });
+  svg+=`</svg>`;
+  const wins=daily.filter(x=>x.v>0).length;
+  $("cal").innerHTML = svg + `<div class="meta" style="margin-top:13px">${wins}/${daily.length} up days · filled = up · outline = down</div>`;
+}
+function renderWaterfall(){
+  const s=(S.settled||[]); if(!s.length){ $("water").innerHTML=`<div class="meta">nothing settled yet</div>`; return; }
+  const recent=s.slice(0,30).reverse(); let run=0;
+  const steps=recent.map(t=>{ const p=+t.pnl||0, lo=run; run+=p; return {p,lo,hi:run}; });
+  let min=0,max=0; steps.forEach(st=>{ min=Math.min(min,st.lo,st.hi); max=Math.max(max,st.lo,st.hi); });
+  const n=steps.length, W=1000, H=190, pad=8, span=(max-min)||1, bw=(W-pad*2)/n, y=v=>H-pad-((v-min)/span)*(H-pad*2), ink=INK();
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" height="190" preserveAspectRatio="none">`;
+  svg+=`<line x1="0" y1="${y(0).toFixed(1)}" x2="${W}" y2="${y(0).toFixed(1)}" stroke="${ink}" stroke-width="1" opacity=".22"/>`;
+  steps.forEach((st,i)=>{ const x=pad+i*bw+bw*0.18, w=Math.max(1.5,bw*0.64), yA=y(Math.max(st.lo,st.hi)), hgt=Math.max(1.5,y(Math.min(st.lo,st.hi))-yA);
+    if(st.p>=0) svg+=`<rect x="${x.toFixed(1)}" y="${yA.toFixed(1)}" width="${w.toFixed(1)}" height="${hgt.toFixed(1)}" fill="${ink}"/>`;
+    else svg+=`<rect x="${(x+0.6).toFixed(1)}" y="${(yA+0.6).toFixed(1)}" width="${(w-1.2).toFixed(1)}" height="${Math.max(1,hgt-1.2).toFixed(1)}" fill="none" stroke="${ink}" stroke-width="1.3"/>`;
+  });
+  svg+=`</svg>`;
+  $("water").innerHTML = svg + `<div class="meta" style="margin-top:13px">running ${signed(run)} over last ${n} · filled = win · outline = loss</div>`;
+}
 
 async function load(){
   try{ const r=await fetch("/api/state",{cache:"no-store"}); if(!r.ok) return; S=await r.json(); render(); }
   catch(e){}
 }
+if(DARK) document.body.classList.add("dark");
+$("menu").addEventListener("click",()=>{ DARK=!DARK; document.body.classList.toggle("dark",DARK);
+  localStorage.setItem("theme",DARK?"dark":"light"); if(S) render(); });
 load(); setInterval(load, 4000);
 </script>
 </body>
