@@ -155,7 +155,9 @@
   #layout { display: grid; grid-template-columns: minmax(0,1fr) 332px; gap: 18px;
     padding: 22px 28px 72px; align-items: start; max-width: 1580px; margin: 0 auto; }
   @media (max-width: 1020px) { #layout { grid-template-columns: 1fr; } }
-  main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  main { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; align-items: start; min-width: 0; }
+  main > #chartpanel, main > #stats, main > #tablepanel { grid-column: 1 / -1; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
   aside { position: sticky; top: 86px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
   #watchlist { overflow: hidden; border-radius: 8px; box-shadow: var(--lit);
     background: linear-gradient(var(--bg2),var(--bg1)); border: 1px solid var(--line); }
@@ -401,7 +403,7 @@
     <div id="chart"></div>
   </div>
 
-  <div class="panel" style="margin-bottom:20px">
+  <div class="panel">
     <div id="charthead2" style="display:flex;align-items:baseline;gap:12px;padding:14px 18px 6px">
       <span style="font-size:13px;font-weight:650">Is it working?</span>
       
@@ -416,7 +418,7 @@
     <div id="curve" style="width:100%;height:170px"></div>
   </div>
 
-  <div class="panel" style="margin-bottom:20px">
+  <div class="panel">
     <div style="display:flex;align-items:baseline;gap:12px;padding:14px 18px 6px">
       <span style="font-size:13px;font-weight:650">Is it getting smarter?</span>
       
@@ -451,7 +453,7 @@
     <div class="roi-grid" id="roibody"></div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="tablepanel">
     <div id="tabbar">
       <span class="tab on" data-t="positions">Positions <span class="n" id="n-pos"></span></span>
       <span class="tab" data-t="settled">Settled <span class="n" id="n-set"></span></span>
@@ -1104,7 +1106,7 @@ function renderCalendar() {
 
     const RT = document.getElementById("riptoggle");
     const apply = () => {
-      const isoff = localStorage.getItem("ripples") === "off";
+      const isoff = localStorage.getItem("ripples") !== "on";   // default OFF; footer toggle enables it
       document.body.classList.toggle("no-ripples", isoff);
       if (RT) RT.textContent = isoff ? "○ caving off" : "◉ caving on";
     };
