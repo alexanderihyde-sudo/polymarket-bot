@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&family=JetBrains+Mono:wght@100..800&display=swap" rel="stylesheet">
 <style>
   /* ── DEGEN TERMINAL — Bloomberg density × neo-brutalism, redesign 2026-06-23
        (from 713-search research). Warm-blue near-black, ONE acid-lime accent,
@@ -105,7 +105,8 @@
     border: 2px solid var(--line2); box-shadow: 6px 6px 0 var(--gold); background: var(--bg1);
     padding: 5px 16px; }
   #symprice .px { font: 700 clamp(32px,4.4vw,50px)/1 var(--mono); letter-spacing: -.035em;
-    color: var(--gold); font-variant-numeric: tabular-nums slashed-zero; }
+    color: var(--gold); font-variant-numeric: tabular-nums slashed-zero;
+    transition: font-variation-settings .3s var(--ease); }
   #symprice .px.up, #symprice .px.dn { color: var(--gold); }
   #symprice .chg { font-size: 13.5px; font-weight: 700; font-family: var(--mono); }
   .caret { color: var(--gold); font: 700 clamp(32px,4.4vw,50px)/1 var(--mono);
@@ -131,6 +132,15 @@
     text-transform: uppercase; border: 1px solid var(--gold-dim); border-radius: 4px; padding: 2px 7px; }
   #feed .sep { color: var(--ink3); opacity: .6; margin: 0 4px; }
   #feed b { color: var(--ink); font-weight: 600; }
+  /* CONTAINER-VARIETY: terminal-window header archetype + chrome scanline + hairline cells */
+  .termhead { font: 600 11px var(--mono); color: var(--gold); padding: 9px 14px; letter-spacing: .02em;
+    border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: baseline; position: relative; }
+  .termhead span { color: var(--ink3); font-weight: 400; font-size: 10px; }
+  #feed { position: relative; }
+  #feed::after, .termhead::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,.04) 0 1px, transparent 1px 3px); }
+  .stat { box-shadow: var(--lit); }
+  #waterfall .empty, #calendar .empty { padding: 22px 8px; }
 
   #layout { display: grid; grid-template-columns: minmax(0,1fr) 332px; gap: 18px;
     padding: 22px 28px 72px; align-items: start; max-width: 1580px; margin: 0 auto; }
@@ -412,6 +422,16 @@
   <div id="stats"></div>
 
   <div class="panel" id="cryptoedge"></div>
+
+  <div class="panel termwin" id="waterfallpanel">
+    <div class="termhead">pnl@paper:~$ ledger <span>cumulative PnL · signed step per settled trade</span></div>
+    <div id="waterfall" style="padding:8px 14px 14px"></div>
+  </div>
+
+  <div class="panel termwin" id="calpanel">
+    <div class="termhead">streak@paper:~$ daily <span>green up-day · red down-day · intensity = size</span></div>
+    <div id="calendar" style="padding:10px 14px 14px"></div>
+  </div>
 
   <div class="panel" id="roipanel">
     <div style="display:flex;align-items:baseline;gap:12px;padding:2px 2px 12px;flex-wrap:wrap">
@@ -905,6 +925,57 @@ function renderPromising() {
   el.innerHTML = h;
 }
 
+/* ── CHART-SWAP: P&L waterfall (signed per-trade steps) — fail-safe SVG ── */
+function renderWaterfall() {
+  try {
+    const el = $("waterfall"); if (!el) return;
+    const s = (S && S.settled) || [];
+    if (!s.length) { el.innerHTML = '<div class="empty">no settled trades yet</div>'; return; }
+    const recent = s.slice(0, 30).reverse();              // settled is newest-first -> oldest-first
+    let run = 0;
+    const steps = recent.map(t => { const p = +t.pnl || 0; const lo = run; run += p; return { p, lo, hi: run }; });
+    let min = 0, max = 0;
+    steps.forEach(st => { min = Math.min(min, st.lo, st.hi); max = Math.max(max, st.lo, st.hi); });
+    const n = steps.length, W = el.clientWidth || 560, H = 150, pad = 16, span = (max - min) || 1;
+    const bw = (W - pad * 2) / n, y = v => H - pad - (v - min) / span * (H - pad * 2);
+    let svg = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+    svg += `<line x1="${pad}" y1="${y(0).toFixed(1)}" x2="${W - pad}" y2="${y(0).toFixed(1)}" stroke="rgba(255,255,255,.14)"/>`;
+    steps.forEach((st, i) => {
+      const x = pad + i * bw + bw * 0.16, w = Math.max(1, bw * 0.68);
+      const yA = y(Math.max(st.lo, st.hi)), hgt = Math.max(1, y(Math.min(st.lo, st.hi)) - yA);
+      if (i > 0) { const px = pad + (i - 1) * bw + bw * 0.16 + bw * 0.68, cy = y(steps[i - 1].hi).toFixed(1);
+        svg += `<line x1="${px.toFixed(1)}" y1="${cy}" x2="${(pad + i * bw + bw * 0.16).toFixed(1)}" y2="${cy}" stroke="rgba(255,255,255,.1)"/>`; }
+      svg += `<rect x="${x.toFixed(1)}" y="${yA.toFixed(1)}" width="${w.toFixed(1)}" height="${hgt.toFixed(1)}" fill="${st.p >= 0 ? '#00d395' : '#ff5c5c'}" opacity=".9"/>`;
+    });
+    svg += `</svg>`;
+    el.innerHTML = svg + `<div style="font:600 11px var(--mono);color:${run >= 0 ? '#00d395' : '#ff5c5c'};margin-top:6px">running ${run >= 0 ? '+' : ''}$${run.toFixed(2)} over last ${n}</div>`;
+  } catch (e) { try { $("waterfall").innerHTML = ''; } catch (_) {} }
+}
+/* ── CHART-SWAP: diverging daily-P&L calendar heatmap — fail-safe SVG ── */
+function renderCalendar() {
+  try {
+    const el = $("calendar"); if (!el) return;
+    const pc = (S && S.pnl_curve) || [];
+    if (!pc.length) { el.innerHTML = '<div class="empty">no history yet</div>'; return; }
+    const byDay = {};
+    for (const p of pc) { if (!p.t) continue; byDay[String(p.t).slice(0, 10)] = p.cum; }
+    const days = Object.keys(byDay).sort();
+    let prev = 0; const daily = days.map(d => { const v = byDay[d] - prev; prev = byDay[d]; return { d, v }; });
+    let mag = 0.01; daily.forEach(x => { mag = Math.max(mag, Math.abs(x.v)); });
+    const cols = Math.min(daily.length, 30), shown = daily.slice(-cols);
+    const cell = 16, gap = 4, w = cols * (cell + gap);
+    let svg = `<svg width="100%" height="${cell + 4}" viewBox="0 0 ${w} ${cell + 4}" preserveAspectRatio="xMinYMid meet">`;
+    shown.forEach((x, i) => {
+      const a = (0.16 + 0.72 * Math.min(1, Math.abs(x.v) / mag)).toFixed(2);
+      const col = x.v >= 0 ? `rgba(0,211,149,${a})` : `rgba(255,92,92,${a})`;
+      svg += `<rect x="${i * (cell + gap)}" y="2" width="${cell}" height="${cell}" rx="3" fill="${col}"><title>${x.d}  ${x.v >= 0 ? '+' : ''}$${x.v.toFixed(2)}</title></rect>`;
+    });
+    svg += `</svg>`;
+    const wins = daily.filter(x => x.v > 0).length;
+    el.innerHTML = svg + `<div style="font:600 10.5px var(--mono);color:var(--ink3);margin-top:8px">${wins}/${daily.length} green days</div>`;
+  } catch (e) { try { $("calendar").innerHTML = ''; } catch (_) {} }
+}
+
 /* ── "caving-in" field: a sinkhole that follows the cursor and collapses the UI
    inward, with wavefronts rushing IN toward it. Pre-rendered sprites blitted via
    drawImage (no per-frame shadowBlur) so it holds the display's full refresh
@@ -1023,7 +1094,8 @@ function render() {
   })(window.__prevTotal, a.total);
   window.__prevTotal = a.total;
   $("total").className = "px num " + cls(diff);
-  $("chg").textContent = `${signed(diff)} (${diff >= 0 ? "+" : ""}${pct.toFixed(2)}%)`;
+  $("total").style.fontVariationSettings = "'wght' " + (diff >= 0 ? 760 : 380);  // hero breathes heavier when winning
+  $("chg").textContent = `${diff >= 0 ? "▲ " : "▼ "}${signed(diff)} (${diff >= 0 ? "+" : ""}${pct.toFixed(2)}%)`;
   $("chg").className = "chg num " + cls(diff);
   const vals = (s.history || []).map(p => p.total);
   $("dayhi").textContent = vals.length ? fmt(Math.max(...vals)) : "—";
@@ -1041,10 +1113,10 @@ function render() {
   }
   window.__prevSettled = s.settled_total;
   $("foot-upd").textContent = "last update " + new Date().toLocaleTimeString();
-  $("plain").innerHTML = `This is a <b>practice account</b> trading with pretend money. ` +
-    `It holds <b>${s.positions.length} open bets</b> worth ${usd(a.invested)}, has finished ` +
-    `<b>${s.settled_total}</b> (${s.settles_24h ?? 0} in the last day), and is ` +
-    `<b class="${cls(diff)}">${diff >= 0 ? "up" : "down"} ${usd(Math.abs(diff))}</b> since the start.`;
+  $("plain").innerHTML = `<b>paper money.</b> nothing real at risk · ` +
+    `<b>${s.positions.length}</b> open (${usd(a.invested)} deployed) · ` +
+    `<b>${s.settled_total}</b> settled (${s.settles_24h ?? 0}/24h) · ` +
+    `<b class="${cls(diff)}">${diff >= 0 ? "▲ up" : "▼ down"} ${usd(Math.abs(diff))}</b> since boot.`;
   const st = $("status"); st.classList.remove("bad");
   st.innerHTML = `<span class="live-dot"></span>LIVE · ${new Date().toLocaleTimeString()}`;
 
@@ -1054,6 +1126,8 @@ function render() {
   renderROI();
   renderCryptoEdge();
   renderPromising();
+  renderWaterfall();
+  renderCalendar();
 
   // stat strip
   const M = s.metrics || {}, R = s.risk || {}, mo = s.models || {};
