@@ -7470,42 +7470,59 @@ def _roi_table(settled, key):
     return sorted(rows, key=lambda r: -r["roi"])
 
 
+EDGE_VALIDATION_N = 400          # settles before a calibration edge is "validated"
+EDGE_MIN_N = 20                  # below this a sleeve is too small to call
+
+
+def _settle_entry(t):
+    for k in ("entry_price", "avg_price", "price", "buy_price", "fill_price"):
+        v = t.get(k)
+        if isinstance(v, (int, float)) and 0 < v < 1.0:
+            return float(v)
+    return None
+
+
+def _wilson_lower(wins, n, z=1.96):
+    """Wilson 95% lower bound on a win proportion (small-sample honest)."""
+    if not n:
+        return 0.0
+    ph = wins / n
+    return ((ph + z * z / (2 * n)
+             - z * ((ph * (1 - ph) / n + z * z / (4 * n * n)) ** 0.5))
+            / (1 + z * z / n))
+
+
+def _pnl_lower(pnls):
+    """95% lower bound on mean P&L per trade (t-approx). > 0 == the sleeve is
+    confidently net-profitable, not just lucky."""
+    n = len(pnls)
+    if n < 2:
+        return None
+    mu = sum(pnls) / n
+    var = sum((x - mu) ** 2 for x in pnls) / (n - 1)
+    return mu - 1.96 * (var / n) ** 0.5
+
+
 def crypto_edge_gate(account):
     """How close the crypto sleeve is to its edge-VALIDATION gate, for the
     dashboard bar. Crypto prediction markets are near-perfectly calibrated, so
     winning AS PRICED is calibration, NOT alpha. The gate to ever size crypto up
     is BOTH n>=400 settled AND the Wilson-95 lower bound on win-rate strictly
-    above the mean entry price (i.e. beating calibration, not matching it).
-    Computed over the FULL settled history — the /api/state payload only ships
-    the last 25 trades, so this can't be done client-side. Read-only."""
+    above the mean entry price (beating calibration, not matching it). Computed
+    over the FULL settled history (the payload ships only 25). Read-only."""
     settled = account.get("settled", []) if account else []
     crypto = [t for t in settled
               if str(t.get("category") or "").lower() == "crypto"]
     n = len(crypto)
     wins = sum(1 for t in crypto if (t.get("pnl") or 0) > 0)
-
-    def _entry(t):
-        for k in ("entry_price", "avg_price", "price", "buy_price", "fill_price"):
-            v = t.get(k)
-            if isinstance(v, (int, float)) and 0 < v < 1.0:
-                return float(v)
-        return None
-    ents = [e for e in (_entry(t) for t in crypto) if e]
+    ents = [e for e in (_settle_entry(t) for t in crypto) if e]
     mean_entry = sum(ents) / len(ents) if ents else None
-    z = 1.96
-    if n:
-        ph = wins / n
-        wl = ((ph + z * z / (2 * n)
-               - z * ((ph * (1 - ph) / n + z * z / (4 * n * n)) ** 0.5))
-              / (1 + z * z / n))
-    else:
-        wl = 0.0
+    wl = _wilson_lower(wins, n)
     total_pnl = round(sum((t.get("pnl") or 0) for t in crypto), 2)
-    target = 400
-    n_gate = n >= target
+    n_gate = n >= EDGE_VALIDATION_N
     ci_gate = mean_entry is not None and wl > mean_entry
     return {
-        "n": n, "target": target, "wins": wins,
+        "n": n, "target": EDGE_VALIDATION_N, "wins": wins,
         "win_pct": round(100.0 * wins / n, 1) if n else 0.0,
         "mean_entry": round(mean_entry, 3) if mean_entry is not None else None,
         "wilson_lower": round(wl, 3),
@@ -7513,8 +7530,66 @@ def crypto_edge_gate(account):
         "total_pnl": total_pnl,
         "n_gate": n_gate, "ci_gate": ci_gate,
         "gate_met": bool(n_gate and ci_gate),
-        "progress": round(min(1.0, n / target), 3),
+        "progress": round(min(1.0, n / EDGE_VALIDATION_N), 3),
     }
+
+
+def edge_gates(account):
+    """Per-strategy edge radar for the dashboard 'Promising edges' panel. A sleeve
+    is PROMISING only on a CONFIDENT signal (>=EDGE_MIN_N settles AND either its
+    Wilson-95 win-rate lower bound beats its mean entry price — beating what's
+    priced — OR its mean-P&L lower bound is > 0 — confidently net-profitable),
+    never on raw positive P&L (that's noise, and the documented way people size up
+    losers). Arbitrage is proven by construction (locked dutch book). Read-only,
+    full settled history; changes no sizing."""
+    settled = account.get("settled", []) if account else []
+    by = {"arbitrage": []}            # arbitrage is the proven edge — always shown
+    for t in settled:
+        by.setdefault(str(t.get("strategy") or "other"), []).append(t)
+    open_by = {}
+    for p in (account.get("positions", []) if account else []):
+        k = str(p.get("strategy") or "other")
+        open_by[k] = open_by.get(k, 0) + 1
+    out = []
+    for s, ts in by.items():
+        n = len(ts)
+        pnls = [float(t.get("pnl") or 0) for t in ts]
+        wins = sum(1 for p in pnls if p > 0)
+        total_pnl = round(sum(pnls), 2)
+        ents = [e for e in (_settle_entry(t) for t in ts) if e]
+        baseline = sum(ents) / len(ents) if ents else None
+        wl = _wilson_lower(wins, n)
+        pl = _pnl_lower(pnls)
+        beats_priced = baseline is not None and wl > baseline
+        net_profitable = pl is not None and pl > 0
+        if s == "arbitrage":
+            status, reason = "proven", "locked payout"
+        elif n < EDGE_MIN_N:
+            status = "watch" if total_pnl > 0 else "none"
+            reason = "small sample"
+        elif beats_priced or net_profitable:
+            status = "promising"
+            reason = " + ".join(x for x in (
+                "beats priced" if beats_priced else "",
+                "net-profitable" if net_profitable else "") if x)
+        elif total_pnl > 0:
+            status, reason = "watch", "positive but not yet confident"
+        else:
+            status, reason = "none", "no edge"
+        out.append({
+            "strategy": s, "n": n, "open": open_by.get(s, 0), "wins": wins,
+            "win_pct": round(100.0 * wins / n, 1) if n else 0.0,
+            "baseline": round(baseline, 3) if baseline is not None else None,
+            "wilson_lower": round(wl, 3),
+            "pnl_lower": round(pl, 3) if pl is not None else None,
+            "total_pnl": total_pnl,
+            "status": status, "reason": reason,
+            "progress": 1.0 if s == "arbitrage"
+                        else round(min(1.0, n / EDGE_VALIDATION_N), 3),
+        })
+    rank = {"proven": 0, "promising": 1, "watch": 2, "none": 3}
+    out.sort(key=lambda g: (rank.get(g["status"], 9), -g["total_pnl"]))
+    return out
 
 
 def dashboard_state(account=None):
@@ -7606,6 +7681,7 @@ def dashboard_state(account=None):
         "skill_history": (json.loads(SKILL_HIST_FILE.read_text())
                           if SKILL_HIST_FILE.exists() else []),
         "crypto_edge": crypto_edge_gate(account),
+        "edge_gates": edge_gates(account),
         "settles_24h": len(recent),
         "raw_n": len(nonarb),
         "effective_n": effective_n(nonarb),

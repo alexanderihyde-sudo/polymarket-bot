@@ -730,6 +730,29 @@ def test_crypto_edge_gate():
        gb["n"] == 400 and gb["n_gate"] and gb["ci_gate"] and gb["gate_met"])
 
 
+def test_edge_gates():
+    # The 'Promising edges' panel must flag a sleeve only on a CONFIDENT signal
+    # (beats its priced baseline OR confidently net-profitable, with enough
+    # sample) — never on raw positive P&L (the size-up-a-loser trap). Arbitrage
+    # is proven by construction.
+    settled = (
+        [{"strategy": "arbitrage", "pnl": 0.5}] * 5                        # proven
+        + [{"strategy": "high_prob", "pnl": 0.30, "entry_price": 0.70}] * 90  # beats priced
+        + [{"strategy": "high_prob", "pnl": -0.70, "entry_price": 0.70}] * 10
+        + [{"strategy": "news", "pnl": -1.0, "entry_price": 0.50}] * 25     # confident loser
+        + [{"strategy": "daytrade", "pnl": 1.0, "entry_price": 0.50}] * 3)  # tiny sample
+    g = {x["strategy"]: x for x in bot.edge_gates({"settled": settled})}
+    ok("edge/arbitrage is proven", g["arbitrage"]["status"] == "proven")
+    ok("edge/calibration-beating favorites are promising",
+       g["high_prob"]["status"] == "promising")
+    ok("edge/confident net-loser is no-edge", g["news"]["status"] == "none")
+    ok("edge/tiny positive sample is only watched, not promising",
+       g["daytrade"]["status"] == "watch")
+    order = [x["status"] for x in bot.edge_gates({"settled": settled})]
+    ok("edge/proven + promising sort to the top",
+       order[0] == "proven" and "promising" in order[:2])
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
@@ -738,7 +761,7 @@ ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_category_never_blocked, test_augmented_arb_guard,
        test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold,
        test_dedup_open_leg, test_arb_scanner_pagination, test_high_prob_scan_pages,
-       test_crypto_edge_gate)
+       test_crypto_edge_gate, test_edge_gates)
 
 if __name__ == "__main__":
     t0 = time.time()

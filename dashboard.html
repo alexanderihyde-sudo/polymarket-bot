@@ -117,8 +117,9 @@
     padding: 22px 28px 72px; align-items: start; max-width: 1580px; margin: 0 auto; }
   @media (max-width: 1020px) { #layout { grid-template-columns: 1fr; } }
   main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-  aside { position: sticky; top: 86px; min-width: 0; overflow: hidden; border-radius: 14px;
-    background: linear-gradient(var(--bg2),var(--bg1)); border: 1px solid var(--line); box-shadow: var(--lit); }
+  aside { position: sticky; top: 86px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+  #watchlist { overflow: hidden; border-radius: 14px; box-shadow: var(--lit);
+    background: linear-gradient(var(--bg2),var(--bg1)); border: 1px solid var(--line); }
 
   .panel { position: relative; border-radius: 14px; overflow: hidden;
     background: linear-gradient(var(--bg2),var(--bg1)); border: 1px solid var(--line); box-shadow: var(--lit); }
@@ -418,7 +419,10 @@
   </div>
 </main>
 
-<aside id="watchlist"></aside>
+<aside>
+  <div class="panel" id="promising"></div>
+  <div class="panel" id="watchlist"></div>
+</aside>
 </div>
 
 <div id="toasts"></div>
@@ -837,6 +841,42 @@ function renderCryptoEdge() {
       '<span>n ≥ ' + e.target + ' ' + (e.n_gate ? yes : no) + '</span></div>' +
     '<div>' + verdict + '</div>';
 }
+function renderPromising() {
+  // Top-right edge radar: only sleeves clearing a CONFIDENT gate (proven, or
+  // beating their priced baseline / confidently net-profitable) surface here —
+  // raw positive P&L is noise and stays in the "watching" tally below.
+  const el = $("promising"); if (!el) return;
+  const gs = (S && S.edge_gates) || [];
+  const top = gs.filter(g => g.status === "proven" || g.status === "promising");
+  const nWatch = gs.filter(g => g.status === "watch").length;
+  const nNone = gs.filter(g => g.status === "none").length;
+  let h = '<div class="wl-head">Promising edges</div>';
+  if (!top.length) {
+    h += '<div class="empty">nothing clearing its gate yet</div>';
+  } else for (const g of top) {
+    const proven = g.status === "proven";
+    const pct = Math.round((g.progress || 0) * 100);
+    const fill = proven ? "var(--up)" : "linear-gradient(90deg,var(--gold),var(--gold-hi))";
+    const chip = proven ? '<span class="chip good">proven</span>'
+                        : '<span class="chip warn">promising</span>';
+    const name = NAMES[g.strategy] || g.strategy;
+    const sub = proven
+      ? (g.open ? g.open + " locked open · " : "") + g.n + " settled" +
+        (g.total_pnl ? " · " + signed(g.total_pnl) : "")
+      : "win " + g.win_pct + "%" + (g.baseline != null ? " vs " + Math.round(g.baseline * 100) + "¢" : "") +
+        " · n " + g.n + "/400 · " + g.reason;
+    h += '<div style="padding:9px 14px;border-bottom:1px solid var(--line)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px">' +
+        '<span style="font-weight:600;color:var(--ink);font-size:12.5px">' + name + '</span>' + chip + '</div>' +
+      '<div class="roi-track" style="height:6px;margin:4px 0 6px"><div class="roi-fill" ' +
+        'style="width:' + pct + '%;background:' + fill + '"></div></div>' +
+      '<div class="num" style="font-size:10.5px;color:var(--ink2)">' + sub + '</div></div>';
+  }
+  h += '<div style="padding:9px 14px;font-size:10px;color:var(--ink3);line-height:1.5">' +
+       nWatch + ' watching · ' + nNone + ' no edge — only signals clearing their priced ' +
+       'baseline (or confidently net-profitable) show here</div>';
+  el.innerHTML = h;
+}
 
 /* ── main render ────────────────────────────────────────────── */
 function render() {
@@ -883,6 +923,7 @@ function render() {
   renderSmart();
   renderROI();
   renderCryptoEdge();
+  renderPromising();
 
   // stat strip
   const M = s.metrics || {}, R = s.risk || {}, mo = s.models || {};
