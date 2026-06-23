@@ -50,7 +50,7 @@
      cursor (and each settle); screen-blended so it only ADDS light, never
      darkens text. Behind sticky chrome, over the panels. */
   #ripplefx { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2;
-    pointer-events: none; opacity: .5; mix-blend-mode: screen; }
+    pointer-events: none; opacity: .9; }
   body.no-ripples #ripplefx { display: none; }
   @media (prefers-reduced-motion: reduce) { #ripplefx { display: none !important; } }
   ::selection { background: var(--gold-dim); }
@@ -887,73 +887,106 @@ function renderPromising() {
   el.innerHTML = h;
 }
 
-/* ── futuristic ripple field (fail-safe; degrades to nothing on any error) ── */
+/* ── "caving-in" field: a sinkhole that follows the cursor and collapses the UI
+   inward, with wavefronts rushing IN toward it. Pre-rendered sprites blitted via
+   drawImage (no per-frame shadowBlur) so it holds the display's full refresh
+   (120/144Hz) at native 4K. Fail-safe: any error disables it, dashboard intact. ── */
 (function ripples() {
   try {
     const cv = document.getElementById("ripplefx");
     if (!cv || !cv.getContext) return;
     const ctx = cv.getContext("2d");
     if (!ctx) return;
-    const DPR = Math.min(2, window.devicePixelRatio || 1);
-    let W = 0, H = 0; const rips = []; const MAX = 32;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
     const off = () => document.body.classList.contains("no-ripples");
+    const DPR = Math.min(2.5, window.devicePixelRatio || 1);   // native pixel ratio -> 4K-crisp
+    let W = 0, H = 0;
     function resize() {
       W = innerWidth; H = innerHeight;
-      cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     }
     resize(); addEventListener("resize", resize);
-    function add(x, y, big) {
-      if (off() || reduced) return;
-      if (rips.length > MAX) rips.shift();
-      const cyan = Math.random() < 0.28;
-      rips.push({ x, y, r: big ? 7 : 2, mr: big ? Math.max(W, H) * 0.55 : 120 + Math.random() * 90,
-        a: big ? 0.85 : 0.5, hue: cyan ? 188 : 42, w: big ? 2 : 1.2, sp: big ? 3.4 : 1.8 });
+
+    // pre-render the sprites once; every frame is just cheap drawImage blits
+    function sprite(paint) {
+      const s = document.createElement("canvas"); s.width = s.height = 256;
+      paint(s.getContext("2d"), 256); return s;
     }
-    let lastMove = 0;
-    addEventListener("mousemove", e => {
-      const t = performance.now(); if (t - lastMove < 55) return; lastMove = t;
-      add(e.clientX, e.clientY, false);
-    }, { passive: true });
-    addEventListener("click", e => add(e.clientX, e.clientY, true));
+    const sink = sprite((c, S) => {                 // depression: dark sink + bright amber lip
+      const r = S / 2, g = c.createRadialGradient(r, r, 0, r, r, r);
+      g.addColorStop(0, "rgba(0,0,0,0.66)");
+      g.addColorStop(0.5, "rgba(8,6,4,0.34)");
+      g.addColorStop(0.78, "rgba(245,166,35,0.14)");
+      g.addColorStop(0.93, "rgba(255,214,130,0.50)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      c.fillStyle = g; c.fillRect(0, 0, S, S);
+    });
+    const ring = sprite((c, S) => {                 // thin glowing wavefront
+      const r = S / 2, g = c.createRadialGradient(r, r, r * 0.82, r, r, r);
+      g.addColorStop(0, "rgba(245,166,35,0)");
+      g.addColorStop(0.75, "rgba(255,205,110,0.55)");
+      g.addColorStop(1, "rgba(255,240,200,0)");
+      c.fillStyle = g; c.fillRect(0, 0, S, S);
+    });
+
+    let mx = W / 2, my = H / 2, px = mx, py = my, cx = mx, cy = my, depth = 0;
+    const waves = [];                                // inward-collapsing wavefronts
+    function cave(x, y, power) {
+      if (off() || reduced) return;
+      depth = Math.min(1.7, depth + power);
+      waves.push({ x, y, r: 150 + Math.random() * 130, sp: 2.0 + power * 3.5,
+        a: Math.min(0.7, 0.35 + power) });
+      if (waves.length > 44) waves.shift();
+    }
+    addEventListener("mousemove", e => { mx = e.clientX; my = e.clientY; }, { passive: true });
+    addEventListener("click", e => { mx = e.clientX; my = e.clientY; cave(e.clientX, e.clientY, 1.2); });
     window.spawnRipple = (x, y) =>
-      add(x == null ? Math.random() * W : x, y == null ? Math.random() * H : y, false);
-    let lastAmb = 0;
+      cave(x == null ? Math.random() * W : x, y == null ? Math.random() * H * 0.7 : y, 0.55);
+
+    let amb = 0;
     function frame(t) {
       requestAnimationFrame(frame);
       ctx.clearRect(0, 0, W, H);
-      if (document.hidden || reduced || off()) return;
-      if (t - lastAmb > 2600 && rips.length < 5) { lastAmb = t; add(Math.random() * W, Math.random() * H * 0.7, false); }
-      ctx.globalCompositeOperation = "lighter";
-      for (let i = rips.length - 1; i >= 0; i--) {
-        const p = rips[i]; p.r += p.sp; const k = p.r / p.mr;
-        if (k >= 1) { rips.splice(i, 1); continue; }
-        const al = p.a * (1 - k);
-        for (let j = 0; j < 2; j++) {
-          const rr = p.r - j * 9; if (rr <= 0) continue;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
-          ctx.lineWidth = p.w * (1 - j * 0.4);
-          ctx.strokeStyle = `hsla(${p.hue},92%,${64 - j * 8}%,${al * (1 - j * 0.45)})`;
-          if (j === 0) { ctx.shadowBlur = 12; ctx.shadowColor = `hsla(${p.hue},92%,60%,${al})`; }
-          else ctx.shadowBlur = 0;
-          ctx.stroke();
-        }
+      if (document.hidden || reduced || off()) { depth = 0; waves.length = 0; return; }
+      cx += (mx - cx) * 0.2; cy += (my - cy) * 0.2;          // sink chases the cursor
+      const v = Math.hypot(mx - px, my - py); px = mx; py = my;
+      if (v > 1.4) {                                         // faster motion -> deeper cave
+        depth = Math.min(1.7, depth + Math.min(0.07, v * 0.0018));
+        if (waves.length < 44 && (Math.floor(t) & 3) === 0)
+          waves.push({ x: cx + (Math.random() - 0.5) * 36, y: cy + (Math.random() - 0.5) * 36,
+            r: 120 + Math.random() * 110, sp: 2.1, a: 0.4 });
       }
-      ctx.shadowBlur = 0; ctx.globalCompositeOperation = "source-over";
+      depth *= 0.93;                                         // relaxes when still (no constant dimming)
+      if (t - amb > 2300 && depth < 0.05) { amb = t; cave(Math.random() * W, Math.random() * H * 0.7, 0.45); }
+      if (depth > 0.02) {                                    // the depression itself
+        const s = 260 + depth * 440;
+        ctx.globalAlpha = Math.min(0.92, depth * 0.85);
+        ctx.drawImage(sink, cx - s / 2, cy - s / 2, s, s);
+      }
+      ctx.globalCompositeOperation = "lighter";              // wavefronts add light
+      for (let i = waves.length - 1; i >= 0; i--) {
+        const w = waves[i]; w.r -= w.sp;                     // radius SHRINKS -> rushes inward
+        if (w.r <= 3) { waves.splice(i, 1); continue; }
+        const s = w.r * 2;
+        ctx.globalAlpha = w.a * Math.min(1, w.r / 130);
+        ctx.drawImage(ring, w.x - w.r, w.y - w.r, s, s);
+      }
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
     }
     requestAnimationFrame(frame);
+
     const RT = document.getElementById("riptoggle");
     const apply = () => {
       const isoff = localStorage.getItem("ripples") === "off";
       document.body.classList.toggle("no-ripples", isoff);
-      if (RT) RT.textContent = isoff ? "○ ripples off" : "◉ ripples on";
+      if (RT) RT.textContent = isoff ? "○ caving off" : "◉ caving on";
     };
     if (RT) RT.addEventListener("click", () => {
       localStorage.setItem("ripples", localStorage.getItem("ripples") === "off" ? "on" : "off"); apply();
     });
     apply();
-  } catch (e) { /* fail-safe: ripples disabled, dashboard unaffected */ }
+  } catch (e) { /* fail-safe: caving effect disabled, dashboard unaffected */ }
 })();
 
 /* ── main render ────────────────────────────────────────────── */
