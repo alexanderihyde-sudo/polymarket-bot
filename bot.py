@@ -7470,6 +7470,53 @@ def _roi_table(settled, key):
     return sorted(rows, key=lambda r: -r["roi"])
 
 
+def crypto_edge_gate(account):
+    """How close the crypto sleeve is to its edge-VALIDATION gate, for the
+    dashboard bar. Crypto prediction markets are near-perfectly calibrated, so
+    winning AS PRICED is calibration, NOT alpha. The gate to ever size crypto up
+    is BOTH n>=400 settled AND the Wilson-95 lower bound on win-rate strictly
+    above the mean entry price (i.e. beating calibration, not matching it).
+    Computed over the FULL settled history — the /api/state payload only ships
+    the last 25 trades, so this can't be done client-side. Read-only."""
+    settled = account.get("settled", []) if account else []
+    crypto = [t for t in settled
+              if str(t.get("category") or "").lower() == "crypto"]
+    n = len(crypto)
+    wins = sum(1 for t in crypto if (t.get("pnl") or 0) > 0)
+
+    def _entry(t):
+        for k in ("entry_price", "avg_price", "price", "buy_price", "fill_price"):
+            v = t.get(k)
+            if isinstance(v, (int, float)) and 0 < v < 1.0:
+                return float(v)
+        return None
+    ents = [e for e in (_entry(t) for t in crypto) if e]
+    mean_entry = sum(ents) / len(ents) if ents else None
+    z = 1.96
+    if n:
+        ph = wins / n
+        wl = ((ph + z * z / (2 * n)
+               - z * ((ph * (1 - ph) / n + z * z / (4 * n * n)) ** 0.5))
+              / (1 + z * z / n))
+    else:
+        wl = 0.0
+    total_pnl = round(sum((t.get("pnl") or 0) for t in crypto), 2)
+    target = 400
+    n_gate = n >= target
+    ci_gate = mean_entry is not None and wl > mean_entry
+    return {
+        "n": n, "target": target, "wins": wins,
+        "win_pct": round(100.0 * wins / n, 1) if n else 0.0,
+        "mean_entry": round(mean_entry, 3) if mean_entry is not None else None,
+        "wilson_lower": round(wl, 3),
+        "mean_pnl": round(total_pnl / n, 3) if n else 0.0,
+        "total_pnl": total_pnl,
+        "n_gate": n_gate, "ci_gate": ci_gate,
+        "gate_met": bool(n_gate and ci_gate),
+        "progress": round(min(1.0, n / target), 3),
+    }
+
+
 def dashboard_state(account=None):
     """Everything the web page needs. When `account` is passed (snapshot_loop),
     build from that live IN-MEMORY snapshot — NO 47 MB disk reload; when None
@@ -7558,6 +7605,7 @@ def dashboard_state(account=None):
         "pnl_curve": curve,
         "skill_history": (json.loads(SKILL_HIST_FILE.read_text())
                           if SKILL_HIST_FILE.exists() else []),
+        "crypto_edge": crypto_edge_gate(account),
         "settles_24h": len(recent),
         "raw_n": len(nonarb),
         "effective_n": effective_n(nonarb),

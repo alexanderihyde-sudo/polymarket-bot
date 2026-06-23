@@ -71,6 +71,7 @@
   #layout main > *:nth-child(4) { animation-delay: .24s; }
   #layout main > *:nth-child(5) { animation-delay: .30s; }
   #layout main > *:nth-child(6) { animation-delay: .36s; }
+  #layout main > *:nth-child(7) { animation-delay: .42s; }
   #layout aside { animation-delay: .16s; }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
@@ -164,6 +165,7 @@
     width: 32px; height: 2px; background: var(--gold); border-radius: 2px; box-shadow: 0 0 12px -1px var(--gold-glow); }
 
   #roipanel { padding: 14px 16px; }
+  #cryptoedge { padding: 14px 16px; }
   .roi-h { font-size: 11.5px; font-weight: 600; color: var(--gold); letter-spacing: .06em;
            text-transform: uppercase; margin: 6px 0 9px; }
   .roi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 30px; }
@@ -381,6 +383,8 @@
   </div>
 
   <div id="stats"></div>
+
+  <div class="panel" id="cryptoedge"></div>
 
   <div class="panel" id="roipanel">
     <div style="display:flex;align-items:baseline;gap:12px;padding:2px 2px 12px;flex-wrap:wrap">
@@ -797,6 +801,42 @@ function renderROI() {
   $("roibody").innerHTML = roiCol("By category", R.by_category) +
                            roiCol("By strategy", R.by_strategy);
 }
+function renderCryptoEdge() {
+  // "How close to an edge" — progress toward the crypto validation gate:
+  // n>=400 settled AND Wilson-95 lower bound on win-rate strictly above the
+  // mean entry price. Crypto is near-perfectly calibrated, so winning AS PRICED
+  // is calibration, NOT alpha; the bar fills gold (un-proven) -> green (gate met).
+  const el = $("cryptoedge"); if (!el) return;
+  const e = (S && S.crypto_edge) || null;
+  if (!e || !e.n) {
+    el.innerHTML = '<div class="roi-h">Crypto edge gate</div>' +
+      '<div class="empty">no crypto trades settled yet</div>'; return;
+  }
+  const pct = Math.round(e.progress * 100), toGo = Math.max(0, e.target - e.n);
+  const met = e.gate_met;
+  const fill = met ? "linear-gradient(90deg,#2f9d75,var(--up))"
+                   : "linear-gradient(90deg,var(--gold),var(--gold-hi))";
+  const yes = '<span class="chip good">✓</span>', no = '<span class="chip bad">✗</span>';
+  const entC = e.mean_entry != null ? Math.round(e.mean_entry * 100) + "¢" : "—";
+  const verdict = met
+    ? '<span class="chip good">EDGE CONFIRMED — beating calibration, clear to size</span>'
+    : '<span class="chip warn">RESOLVING AS PRICED — calibration, not alpha · gate shut</span>';
+  el.innerHTML =
+    '<div class="roi-h">Crypto edge gate<span style="margin-left:8px;font-weight:400;' +
+      'text-transform:none;letter-spacing:0;color:var(--ink3)">winning as priced isn\'t alpha</span></div>' +
+    '<div class="roi-track" style="height:12px;margin:2px 0 8px"><div class="roi-fill" ' +
+      'style="width:' + pct + '%;background:' + fill + '"></div></div>' +
+    '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink2);margin-bottom:10px">' +
+      '<span><b class="num" style="color:var(--ink)">' + e.n + '</b> / ' + e.target +
+      ' settled · <b class="num">' + pct + '%</b></span>' +
+      '<span class="num">' + (toGo > 0 ? toGo + ' to go' : 'sample complete') + '</span></div>' +
+    '<div style="display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;font-size:11.5px;' +
+      'color:var(--ink2);margin-bottom:10px">' +
+      '<span>win <b class="num" style="color:var(--ink)">' + e.win_pct + '%</b> vs <b class="num">' + entC + '</b> priced</span>' +
+      '<span>CI-lo <b class="num">' + (e.wilson_lower * 100).toFixed(1) + '%</b> &gt; entry ' + (e.ci_gate ? yes : no) + '</span>' +
+      '<span>n ≥ ' + e.target + ' ' + (e.n_gate ? yes : no) + '</span></div>' +
+    '<div>' + verdict + '</div>';
+}
 
 /* ── main render ────────────────────────────────────────────── */
 function render() {
@@ -842,6 +882,7 @@ function render() {
   renderCurve();
   renderSmart();
   renderROI();
+  renderCryptoEdge();
 
   // stat strip
   const M = s.metrics || {}, R = s.risk || {}, mo = s.models || {};

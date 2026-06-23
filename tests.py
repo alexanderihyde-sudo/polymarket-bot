@@ -707,6 +707,29 @@ def test_high_prob_scan_pages():
         bot.get_json = saved
 
 
+def test_crypto_edge_gate():
+    # Crypto is calibration, not alpha: the gate to ever size up is n>=400 AND
+    # the Wilson-95 lower bound on win-rate strictly ABOVE the mean entry price
+    # (beating calibration, not matching it). A small sample winning exactly AS
+    # PRICED must keep the gate SHUT.
+    settled = ([{"category": "Crypto", "pnl": 0.10, "entry_price": 0.90}] * 9
+               + [{"category": "Crypto", "pnl": -0.90, "entry_price": 0.90}]
+               + [{"category": "Politics", "pnl": 5.0, "entry_price": 0.50}] * 3)
+    g = bot.crypto_edge_gate({"settled": settled})
+    ok("crypto-gate/counts only crypto", g["n"] == 10 and g["wins"] == 9)
+    ok("crypto-gate/win% computed", g["win_pct"] == 90.0)
+    ok("crypto-gate/below n target", g["n_gate"] is False)
+    ok("crypto-gate/wilson-lower under entry at n=10 (as priced -> no edge)",
+       g["wilson_lower"] < g["mean_entry"] and g["ci_gate"] is False)
+    ok("crypto-gate/shut on a small as-priced sample", g["gate_met"] is False)
+    # the gate OPENS only with a big sample beating calibration:
+    big = ([{"category": "Crypto", "pnl": 0.20, "entry_price": 0.80}] * 360
+           + [{"category": "Crypto", "pnl": -0.80, "entry_price": 0.80}] * 40)
+    gb = bot.crypto_edge_gate({"settled": big})
+    ok("crypto-gate/opens at n>=400 with CI-lower above entry",
+       gb["n"] == 400 and gb["n_gate"] and gb["ci_gate"] and gb["gate_met"])
+
+
 # ---------------------------------------------------------- main
 
 ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
@@ -714,7 +737,8 @@ ALL = (test_ml_library, test_parsers, test_chartist, test_learning_rules,
        test_adaptive_category_sizing, test_never_zero_bets,
        test_category_never_blocked, test_augmented_arb_guard,
        test_trade_floor, test_ws_price_feed, test_scan_pairs_dup_threshold,
-       test_dedup_open_leg, test_arb_scanner_pagination, test_high_prob_scan_pages)
+       test_dedup_open_leg, test_arb_scanner_pagination, test_high_prob_scan_pages,
+       test_crypto_edge_gate)
 
 if __name__ == "__main__":
     t0 = time.time()
