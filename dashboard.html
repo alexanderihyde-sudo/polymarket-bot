@@ -141,6 +141,16 @@
     background: repeating-linear-gradient(0deg, rgba(255,255,255,.04) 0 1px, transparent 1px 3px); }
   .stat { box-shadow: var(--lit); }
   #waterfall .empty, #calendar .empty { padding: 22px 8px; }
+  /* CONTAINER-VARIETY: receipt-stub (settled) + notched HUD (open positions) */
+  #tb-settled, #tb-positions { position: relative; }
+  #tb-settled::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 7px; pointer-events: none;
+    background: radial-gradient(circle at 6px 0, transparent 5px, var(--bg2) 5.5px) repeat-x; background-size: 12px 7px; }
+  #tb-settled::after { content: "PAPER ONLY"; position: absolute; top: 16px; right: 18px; pointer-events: none; z-index: 2;
+    font: 700 11px var(--mono); letter-spacing: .14em; color: rgba(255,176,0,.26);
+    border: 2px solid rgba(255,176,0,.26); border-radius: 3px; padding: 3px 8px; transform: rotate(-7deg); }
+  #tb-positions::before, #tb-positions::after { content: ""; position: absolute; width: 14px; height: 14px; pointer-events: none; }
+  #tb-positions::before { top: 4px; left: 4px; border-top: 2px solid var(--gold); border-left: 2px solid var(--gold); }
+  #tb-positions::after { bottom: 4px; right: 4px; border-bottom: 2px solid var(--gold); border-right: 2px solid var(--gold); }
 
   #layout { display: grid; grid-template-columns: minmax(0,1fr) 332px; gap: 18px;
     padding: 22px 28px 72px; align-items: start; max-width: 1580px; margin: 0 auto; }
@@ -886,6 +896,9 @@ function renderCryptoEdge() {
       '<span>win <b class="num" style="color:var(--ink)">' + e.win_pct + '%</b> vs <b class="num">' + entC + '</b> priced</span>' +
       '<span>CI-lo <b class="num">' + (e.wilson_lower * 100).toFixed(1) + '%</b> &gt; entry ' + (e.ci_gate ? yes : no) + '</span>' +
       '<span>n ≥ ' + e.target + ' ' + (e.n_gate ? yes : no) + '</span></div>' +
+    '<div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">' +
+      '<span style="font:600 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);white-space:nowrap">ci-lo · priced</span>' +
+      '<span style="flex:1">' + (e.mean_entry != null ? bulletSVG(e.wilson_lower, e.mean_entry, 0.5, 1) : '') + '</span></div>' +
     '<div>' + verdict + '</div>';
 }
 function renderPromising() {
@@ -925,6 +938,30 @@ function renderPromising() {
   el.innerHTML = h;
 }
 
+/* ── tiny inline sparkline (per-strategy value trend) — fail-safe ── */
+function sparkSVG(vals) {
+  try {
+    if (!vals || vals.length < 2) return "";
+    const w = 62, h = 16, min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
+    const pts = vals.map((v, i) => `${(i / (vals.length - 1) * w).toFixed(1)},${(h - 1 - (v - min) / span * (h - 2)).toFixed(1)}`).join(" ");
+    const col = vals[vals.length - 1] >= vals[0] ? "#00d395" : "#ff5c5c";
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block;margin-left:auto">` +
+      `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  } catch (e) { return ""; }
+}
+/* ── bullet graph: value bar vs an amber threshold marker, red/green bands ── */
+function bulletSVG(value, target, lo, hi) {
+  try {
+    const W = 100, H = 16, span = (hi - lo) || 1, f = x => Math.max(0, Math.min(1, (x - lo) / span));
+    const v = f(value), t = f(target), good = value >= target;
+    return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="display:block">` +
+      `<rect x="0" y="9" width="${W}" height="5" fill="rgba(255,255,255,.05)"/>` +
+      `<rect x="0" y="9" width="${(t * W).toFixed(1)}" height="5" fill="rgba(255,92,92,.10)"/>` +
+      `<rect x="${(t * W).toFixed(1)}" y="9" width="${((1 - t) * W).toFixed(1)}" height="5" fill="rgba(0,211,149,.10)"/>` +
+      `<rect x="0" y="10" width="${(v * W).toFixed(1)}" height="3" rx="1.5" fill="${good ? '#00d395' : '#ff5c5c'}"/>` +
+      `<rect x="${(t * W - 0.7).toFixed(1)}" y="6" width="1.6" height="11" fill="#ffb000"/></svg>`;
+  } catch (e) { return ""; }
+}
 /* ── CHART-SWAP: P&L waterfall (signed per-trade steps) — fail-safe SVG ── */
 function renderWaterfall() {
   try {
@@ -1159,21 +1196,23 @@ function render() {
          mo.size_mult < 1 ? "dn" : "up");
 
   // watchlist
-  const wlRow = (key, name, value, chg, meta, pctUsed) => `
+  const wlRow = (key, name, value, chg, meta, pctUsed, spark) => `
     <div class="wl-row ${FILTER === key ? "active" : ""}" data-f="${esc(key)}">
       <div><div class="wl-name">${esc(name)}</div><div class="wl-meta">${meta}</div></div>
       <div class="wl-right">
         <div class="wl-px num">${usd(value)}</div>
         <div class="wl-chg num ${cls(chg)}">${signed(chg)}</div>
-        ${pctUsed != null ? `<div class="wl-bar"><i style="width:${pctUsed}%"></i></div>` : ""}
+        ${spark || (pctUsed != null ? `<div class="wl-bar"><i style="width:${pctUsed}%"></i></div>` : "")}
       </div></div>`;
   let wl = '<div class="wl-head">Strategies</div>';
+  const hist = s.history || [];
   for (const [k, A] of Object.entries(s.accounts || {})) {
     const pnl = A.realized + A.unrealized;
-    const dep = s.positions.filter(p => p.strategy === k).reduce((t, p) => t + p.cost, 0);
+    const series = hist.map(p => p.strat && p.strat[k]).filter(v => v != null);
+    const step = Math.max(1, Math.floor(series.length / 48));
+    const spark = sparkSVG(series.filter((_, i) => i % step === 0).slice(-48));
     wl += wlRow(k, NAMES[k] || k, A.value, pnl,
-      `${A.open} open · ${A.trades} done · alloc ${usd(A.alloc)}`,
-      A.alloc ? Math.min(100, 100 * dep / A.alloc) : 0);
+      `${A.open} open · ${A.trades} done · alloc ${usd(A.alloc)}`, null, spark);
   }
   wl += '<div class="wl-head">Categories</div>';
   for (const [c, b] of Object.entries(s.category_budgets || {}))
